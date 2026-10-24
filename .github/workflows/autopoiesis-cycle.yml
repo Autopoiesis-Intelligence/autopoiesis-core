@@ -1,4 +1,6 @@
 name: Autopoiesis scheduled cycle
+# The selector skips failed runs with the emergency-stop title (autopoesis/scheduled_state.py).
+run-name: "${{ vars.AUTOPOIESIS_CYCLE_DISABLED == 'true' && 'Autopoiesis cycle disabled by emergency stop' || 'Autopoiesis scheduled cycle' }}"
 
 on:
   schedule:

@@ -6,6 +6,10 @@ from typing import Any
 
 
 WORKFLOW_PATH = ".github/workflows/autopoiesis-cycle.yml"
+# autopoiesis-cycle.yml sets this run-name while AUTOPOIESIS_CYCLE_DISABLED is 'true'. Such a run
+# fails at the emergency-stop step before checkout, so it changed no state and must not block the
+# cycle once the owner re-enables it.
+DISABLED_RUN_TITLE = "Autopoiesis cycle disabled by emergency stop"
 
 
 def _positive_integer(value: Any) -> bool:
@@ -46,16 +50,29 @@ def select_prior_successful_run(
             raise ValueError("workflow run path is missing or malformed")
         if run.get("conclusion") is not None and not isinstance(run.get("conclusion"), str):
             raise ValueError("workflow run conclusion is malformed")
+        if not isinstance(run.get("display_title"), str):
+            raise ValueError("workflow run display_title is missing or malformed")
 
-    relevant = [
+    cycle_runs = [
         run
         for run in runs
         if run["id"] != current_run_id
         and run["head_branch"] == "main"
         and run["path"].split("@", 1)[0] == WORKFLOW_PATH
-        # A skipped run never started the job (disable switch, repository or branch guard),
-        # so it changed no state; counting it would make the disable switch block bootstrap
-        # and restore forever.
+    ]
+    for run in cycle_runs:
+        if run["display_title"] == DISABLED_RUN_TITLE and (
+            run.get("conclusion") != "failure" or run["run_attempt"] != 1
+        ):
+            raise ValueError(
+                f"Emergency-stop run {run['id']} must have failed on its first attempt; "
+                f"got conclusion={run.get('conclusion')!r}, run_attempt={run['run_attempt']!r}"
+            )
+    relevant = [
+        run
+        for run in cycle_runs
+        if run["display_title"] != DISABLED_RUN_TITLE
+        # A skipped run never started the job (repository or branch guard), so it changed no state.
         and run.get("conclusion") != "skipped"
     ]
     relevant.sort(

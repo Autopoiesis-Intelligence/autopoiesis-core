@@ -84,6 +84,14 @@ class ScheduledWorkflowContractTests(unittest.TestCase):
         self.assertIn("name: autopoiesis-cycle-state", self.source)
         self.assertIn("retention-days: 90", self.source)
 
+    def test_emergency_stop_run_name_matches_the_selector_title(self):
+        from autopoesis.scheduled_state import DISABLED_RUN_TITLE
+
+        run_name = next(line for line in self.source.splitlines() if line.startswith("run-name: "))
+        self.assertIn(f"vars.AUTOPOIESIS_CYCLE_DISABLED == 'true' && '{DISABLED_RUN_TITLE}'", run_name)
+        guard = self.source.split("      - name: Enforce emergency stop", 1)[1].split("      - ", 1)[0]
+        self.assertIn("if: ${{ vars.AUTOPOIESIS_CYCLE_DISABLED == 'true' }}", guard)
+        self.assertIn("exit 1", guard)
 
 if __name__ == "__main__":
     unittest.main()
