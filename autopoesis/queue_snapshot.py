@@ -174,6 +174,11 @@ def validate_restore_source_run(
     expected_id = _run_id_text(requested_run_id)
     if str(run.get("id", "")) != expected_id:
         raise ValueError("Source run ID does not match restore_run_id")
+    if run.get("run_attempt") != 1:
+        raise ValueError(
+            "Source run must be the original attempt (run_attempt=1); "
+            f"got {run.get('run_attempt')!r}"
+        )
     if run.get("conclusion") != "success":
         raise ValueError(
             f"Source run must have conclusion=success; got {run.get('conclusion')!r}"
@@ -281,25 +286,45 @@ def latest_source_run_id(
 
     current_id = int(_run_id_text(current_run_id))
     candidates = []
-    for run in runs:
-        if not isinstance(run, dict) or type(run.get("id")) is not int:
-            continue
+    for index, run in enumerate(runs):
+        if not isinstance(run, dict):
+            raise ValueError(
+                f"Workflow run history entry {index} must be a JSON object"
+            )
+        if type(run.get("id")) is not int:
+            raise ValueError(
+                f"Workflow run history entry {index} must contain an integer run ID"
+            )
         path = run.get("path")
         workflow_path = path.split("@", 1)[0] if isinstance(path, str) else ""
         if (
             run["id"] != current_id
-            and run.get("conclusion") == "success"
             and run.get("event") == "workflow_dispatch"
             and run.get("head_branch") == current_branch
             and workflow_path == expected_workflow_path
         ):
-            candidates.append(run["id"])
+            candidates.append(run)
     if not candidates:
         raise ValueError(
             f"No successful workflow_dispatch snapshot run found on branch {current_branch!r}"
         )
-    # GitHub run IDs increase monotonically, so the largest ID is the newest run.
-    return max(candidates)
+
+    # Fail closed on the newest relevant run rather than silently rolling back
+    # to an older successful snapshot when the latest dispatch failed/cancelled.
+    newest = max(candidates, key=lambda candidate: candidate["id"])
+    if newest.get("run_attempt") != 1:
+        raise ValueError(
+            f"No successful workflow_dispatch snapshot run: newest workflow_dispatch "
+            f"snapshot run {newest['id']} must have run_attempt=1; "
+            f"got {newest.get('run_attempt')!r}"
+        )
+    if newest.get("conclusion") != "success":
+        raise ValueError(
+            f"No successful workflow_dispatch snapshot run: newest workflow_dispatch "
+            f"snapshot run {newest['id']} must have conclusion=success; "
+            f"got {newest.get('conclusion')!r}"
+        )
+    return newest["id"]
 
 
 def require_latest_source_run(
