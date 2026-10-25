@@ -95,6 +95,35 @@ class BoundedQueueCycleTests(unittest.TestCase):
             for event in queue["history"]
         ))
 
+    def test_selection_exception_returns_recovery_required(self):
+        with mock.patch.object(
+            queue_cycle,
+            "select_next_task_file",
+            side_effect=OSError("simulated queue lock failure"),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
+        self.assertIsNone(result["task_id"])
+        self.assertFalse(result["reopened"])
+        self.assertIn("simulated queue lock failure", result["reason"])
+        self.assertEqual(load_queue(self.queue_path)["items"][0]["status"], "OPEN")
+
+    def test_selected_state_reload_exception_returns_recovery_required(self):
+        with mock.patch.object(
+            queue_cycle,
+            "load_queue",
+            side_effect=OSError("simulated read failure"),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
+        self.assertEqual(result["task_id"], "CYCLE-001")
+        self.assertFalse(result["reopened"])
+        self.assertIn("simulated read failure", result["reason"])
+        # The independent test import remains usable to inspect persisted state.
+        self.assertEqual(load_queue(self.queue_path)["items"][0]["status"], "SELECTED")
+
     def test_missing_selected_lease_reports_recovery_required_without_rejection(self):
         # First create a real persisted selection/lease. Then simulate the
         # selector losing its lease metadata; the coordinator must not claim
