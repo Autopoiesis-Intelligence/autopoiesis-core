@@ -38,11 +38,23 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     DONE is written only after the verifier's PASS evidence is recorded and
     the tested source digest still matches.
     """
-    selection = select_next_task_file(
-        queue_path,
-        OWNER,
-        types=SUPPORTED_CYCLE_TYPES,
-    )
+    try:
+        selection = select_next_task_file(
+            queue_path,
+            OWNER,
+            types=SUPPORTED_CYCLE_TYPES,
+        )
+    except Exception as exc:
+        # Selection may fail before a task ID or lease can be trusted.
+        # Surface the failed cycle as recoverable instead of leaking an
+        # unstructured exception or implying that no work exists.
+        return {
+            "status": "RECOVERY_REQUIRED",
+            "task_id": None,
+            "reason": f"queue selection failed: {type(exc).__name__}: {exc}",
+            "reopened": False,
+        }
+
     task_id = selection.get("selected")
     if task_id is None:
         return {
@@ -51,7 +63,15 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             "deferred": selection.get("deferred", []),
         }
 
-    queue = load_queue(queue_path)
+    try:
+        queue = load_queue(queue_path)
+    except Exception as exc:
+        return {
+            "status": "RECOVERY_REQUIRED",
+            "task_id": task_id,
+            "reason": f"selected task state could not be reloaded: {type(exc).__name__}: {exc}",
+            "reopened": False,
+        }
     item = next((entry for entry in queue["items"] if entry.get("id") == task_id), None)
     lease = selection.get("lease")
     token = lease.get("token") if isinstance(lease, dict) else None
