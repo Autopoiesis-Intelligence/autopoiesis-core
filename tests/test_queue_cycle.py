@@ -95,6 +95,38 @@ class BoundedQueueCycleTests(unittest.TestCase):
             for event in queue["history"]
         ))
 
+    def test_repeated_failures_reject_after_max_attempts(self):
+        expected = ["RETRYABLE_FAILURE", "RETRYABLE_FAILURE", "REJECTED"]
+        for expected_status in expected:
+            with mock.patch.object(
+                queue_cycle, "execute_task",
+                side_effect=lambda task, path: self._fixture_handler(task, path, "FAIL"),
+            ):
+                result = run_one_queue_cycle(self.queue_path)
+            self.assertEqual(result["status"], expected_status)
+
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "REJECTED")
+        self.assertEqual(item["attempts"], 3)
+        rejected_events = [
+            event for event in queue["history"]
+            if event.get("event") == "STATUS_CHANGED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("to") == "REJECTED"
+        ]
+        self.assertEqual(len(rejected_events), 1)
+
+        # A fourth call must not misreport the terminal task as executable work.
+        before = self.queue_path.read_bytes()
+        result = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(result["status"], "NO_WORK")
+        self.assertTrue(any(
+            item.get("id") == "CYCLE-001" and item.get("reason") == "attempt limit reached"
+            for item in result["deferred"]
+        ))
+        self.assertEqual(self.queue_path.read_bytes(), before)
+
     def test_mismatched_executor_digest_reopens_task_without_done(self):
         with mock.patch.object(
             queue_cycle, "execute_task",
