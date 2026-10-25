@@ -267,6 +267,15 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         self.assertEqual(provenance["source_workflow_path"], ".github/workflows/ci.yml")
         self.assertEqual(provenance["source_conclusion"], "success")
 
+    def test_source_run_validation_rejects_non_integer_attempt(self):
+        for attempt in (True, False, 1.0, "1", None):
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(ValueError, "original attempt"):
+                validate_restore_source_run(
+                    {**self._valid_source_run(), "run_attempt": attempt},
+                    requested_run_id=12345,
+                    expected_repository="Autopoiesis-Intelligence/autopoesis-core",
+                )
+
     def test_source_run_validation_normalizes_leading_zero_run_id(self):
         provenance = validate_restore_source_run(
             self._valid_source_run(),
