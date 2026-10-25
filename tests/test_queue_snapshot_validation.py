@@ -435,6 +435,42 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "newest workflow_dispatch snapshot run 450"):
             self._latest_check(300, runs)
 
+    def test_newer_negative_fault_run_blocks_snapshot_fallback_even_when_failed(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run(
+                450,
+                conclusion="failure",
+                display_title="Negative restore fault: tamper_bytes",
+            ),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "negative restore fault run"):
+            latest_source_run_id(
+                {"workflow_runs": runs},
+                current_run_id=500,
+                current_branch="main",
+            )
+
+    def test_negative_fault_run_with_success_conclusion_fails_closed(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run(
+                450,
+                conclusion="success",
+                display_title="Negative restore fault: tamper_bytes",
+            ),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "negative restore fault run"):
+            latest_source_run_id(
+                {"workflow_runs": runs},
+                current_run_id=500,
+                current_branch="main",
+            )
+
     def test_source_from_another_branch_is_rejected(self):
         runs = [self._dispatch_run(300, head_branch="other"), self._dispatch_run(200)]
 
