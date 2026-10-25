@@ -137,6 +137,34 @@ class BoundedQueueCycleTests(unittest.TestCase):
             for event in queue["history"]
         ))
 
+    def test_real_executor_sandbox_cycle_completes_with_bound_evidence(self):
+        # Integration path: do not mock execute_task. The real executor creates
+        # a temporary package copy, runs the generated import test, and records
+        # lease-bound verification evidence into this queue.
+        result = run_one_queue_cycle(self.queue_path)
+
+        self.assertEqual(result["status"], "COMPLETED", result)
+        self.assertEqual(result["verification_status"], "PASS")
+        execution = result["execution"]
+        self.assertEqual(execution["result"]["verification_status"], "PASS")
+        self.assertTrue(execution["result"]["source_package_copied"])
+        self.assertTrue(execution["result"]["generated_code_executed"])
+        self.assertFalse(execution["result"]["repository_modified"])
+        self.assertEqual(execution["result"]["source_tree_sha256"], result["revision"])
+
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "DONE")
+        self.assertEqual(item["attempts"], 1)
+        passing_events = [
+            event for event in queue["history"]
+            if event.get("event") == "VERIFICATION_RECORDED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("verification_status") == "PASS"
+        ]
+        self.assertGreaterEqual(len(passing_events), 1)
+        self.assertTrue(all(event.get("revision") == result["revision"] for event in passing_events))
+
     def test_no_supported_work_does_not_mutate_queue(self):
         unsupported_path = Path(self.temp.name) / "unsupported.json"
         update_queue_file(
