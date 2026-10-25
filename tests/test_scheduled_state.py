@@ -2,7 +2,11 @@
 
 import unittest
 
-from autopoesis.scheduled_state import DISABLED_RUN_TITLE, select_prior_successful_run
+from autopoesis.scheduled_state import (
+    DISABLED_RUN_TITLE,
+    select_prior_successful_run,
+    validate_emergency_stop_job_history,
+)
 
 
 WORKFLOW = ".github/workflows/autopoiesis-cycle.yml"
@@ -175,7 +179,7 @@ class ScheduledStateSelectionTests(unittest.TestCase):
 
     def test_emergency_stop_requires_step_evidence(self):
         history = [{"workflow_runs": [run(10, 10), run(11, 11, conclusion="failure", title=DISABLED_RUN_TITLE)]}]
-        with self.assertRaisesRegex(ValueError, "lacks verified guard/step evidence"):
+        with self.assertRaisesRegex(ValueError, "has no verified job history"):
             select_prior_successful_run(history, current_run_id=12, bootstrap=False)
 
     def test_emergency_stop_job_history_matches_the_real_jobs_api_shape(self):
