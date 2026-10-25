@@ -38,7 +38,8 @@ def validate_emergency_stop_job_history(payload: Any) -> bool:
     if any(not isinstance(name, str) for name in names) or len(names) != len(set(names)):
         raise ValueError("emergency-stop step history is malformed or ambiguous")
     guard_name = "Enforce emergency stop"
-    checkout_name = "actions/checkout@v4"
+    # The jobs API names an unnamed `uses:` step "Run <action>", e.g. "Run actions/checkout@v4".
+    checkout_name = "Run actions/checkout@v4"
     if names.count(guard_name) != 1 or names.count(checkout_name) != 1:
         raise ValueError("emergency-stop guard or checkout step is missing or duplicated")
     guard_index = names.index(guard_name)
@@ -47,7 +48,10 @@ def validate_emergency_stop_job_history(payload: Any) -> bool:
         raise ValueError("checkout appears before the emergency-stop guard")
     if steps[guard_index].get("conclusion") != "failure":
         raise ValueError("emergency-stop guard did not fail")
-    if any(step.get("conclusion") != "skipped" for step in steps[guard_index + 1:]):
+    # The runner always appends "Complete job"; every workflow step after the guard must be skipped.
+    if names[-1] != "Complete job":
+        raise ValueError("emergency-stop step history does not end with the runner's Complete job step")
+    if any(step.get("conclusion") != "skipped" for step in steps[guard_index + 1:-1]):
         raise ValueError("a step after the emergency-stop guard was not skipped")
     return True
 

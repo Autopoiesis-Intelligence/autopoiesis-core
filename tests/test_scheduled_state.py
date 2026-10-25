@@ -106,33 +106,32 @@ class ScheduledStateSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks verified guard/step evidence"):
             select_prior_successful_run(history, current_run_id=12, bootstrap=False)
 
-    def test_emergency_stop_job_evidence_requires_guard_failure_and_no_later_steps(self):
-        payload = [{"jobs": [{"name": "cycle", "status": "completed", "conclusion": "failure", "steps": [
-            {"name": "Set up job", "conclusion": "success"},
-            {"name": "Enforce emergency stop", "conclusion": "failure"},
-            {"name": "actions/checkout@v4", "conclusion": "skipped"},
-            {"name": "Run cycle", "conclusion": "skipped"},
-        ]}]}]
-        self.assertTrue(validate_emergency_stop_job_history(payload))
-        for changed in (
-            [{"jobs": [{"name": "cycle", "status": "completed", "conclusion": "failure", "steps": [
-                {"name": "Set up job", "conclusion": "success"},
-                {"name": "Enforce emergency stop", "conclusion": "skipped"},
-                {"name": "actions/checkout@v4", "conclusion": "success"},
-            ]}]}],
-            [{"jobs": [{"name": "cycle", "status": "completed", "conclusion": "failure", "steps": [
-                {"name": "Set up job", "conclusion": "success"},
-                {"name": "Enforce emergency stop", "conclusion": "failure"},
-                {"name": "actions/checkout@v4", "conclusion": "success"},
-            ]}]}],
-            [{"jobs": [{"name": "cycle", "status": "completed", "conclusion": "failure", "steps": [
-                {"name": "Set up job", "conclusion": "success"},
-                {"name": "Enforce emergency stop", "conclusion": "failure"},
-            ]}]}],
-            [{"jobs": []}],
-        ):
-            with self.assertRaises(ValueError):
-                validate_emergency_stop_job_history(changed)
+    def test_emergency_stop_job_history_matches_the_real_jobs_api_shape(self):
+        # Step names as the jobs API reports them; checked against run 40099720954's jobs.
+        def jobs(guard="failure", after="skipped", *, extra=()):
+            steps = [{"name": "Set up job", "conclusion": "success"},
+                     {"name": "Enforce emergency stop", "conclusion": guard},
+                     {"name": "Run actions/checkout@v4", "conclusion": after},
+                     {"name": "Run actions/setup-python@v5", "conclusion": "skipped"},
+                     *extra,
+                     {"name": "Complete job", "conclusion": "success"}]
+            return [{"jobs": [{"name": "cycle", "status": "completed", "conclusion": "failure", "steps": steps}]}]
+
+        self.assertTrue(validate_emergency_stop_job_history(jobs()))
+        # Race: the run was titled while disabled, then the variable was cleared, so the guard was skipped.
+        with self.assertRaisesRegex(ValueError, "guard did not fail"):
+            validate_emergency_stop_job_history(jobs(guard="skipped", after="success"))
+        with self.assertRaisesRegex(ValueError, "was not skipped"):
+            validate_emergency_stop_job_history(jobs(after="success"))
+        with self.assertRaisesRegex(ValueError, "was not skipped"):
+            validate_emergency_stop_job_history(jobs(extra=({"name": "Persist next queue state", "conclusion": "success"},)))
+        truncated = jobs()
+        truncated[0]["jobs"][0]["steps"].pop()
+        with self.assertRaisesRegex(ValueError, "Complete job"):
+            validate_emergency_stop_job_history(truncated)
+        with self.assertRaises(ValueError):
+            validate_emergency_stop_job_history([{"jobs": []}])
+
     def test_bootstrap_refused_after_failed_only_history(self):
         pages = [{"workflow_runs": [run(11, 11, conclusion="failure")]}]
         with self.assertRaisesRegex(ValueError, "unresolved prior cycle"):
