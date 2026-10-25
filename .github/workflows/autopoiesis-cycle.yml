@@ -52,7 +52,7 @@ jobs:
           python - <<'PY'
           import json, os, re, subprocess
           from pathlib import Path
-          from autopoesis.scheduled_state import DISABLED_RUN_TITLE, select_prior_successful_run, validate_emergency_stop_job_history
+          from autopoesis.scheduled_state import select_prior_successful_run\n          from autopoesis.scheduled_state import DISABLED_RUN_TITLE, validate_emergency_stop_job_history
           pages = json.loads(Path(".cycle-runs-pages.json").read_text())
           bootstrap = os.environ.get("BOOTSTRAP", "false").lower() == "true"
           verified_disabled_run_ids = set()
