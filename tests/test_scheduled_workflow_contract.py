@@ -93,5 +93,13 @@ class ScheduledWorkflowContractTests(unittest.TestCase):
         self.assertIn("if: ${{ vars.AUTOPOIESIS_CYCLE_DISABLED == 'true' }}", guard)
         self.assertIn("exit 1", guard)
 
+
+    def test_restore_validates_emergency_stop_job_history(self):
+        source = Path(WORKFLOW).read_text()
+        self.assertIn("validate_emergency_stop_job_history", source)
+        self.assertIn("/actions/runs/", source)
+        self.assertIn("/jobs?per_page=100", source)
+        self.assertIn("verified_disabled_run_ids", source)
+
 if __name__ == "__main__":
     unittest.main()
