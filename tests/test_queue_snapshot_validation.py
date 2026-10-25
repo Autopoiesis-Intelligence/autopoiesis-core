@@ -244,6 +244,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
     def _valid_source_run(self):
         return {
             "id": 12345,
+            "run_attempt": 1,
             "conclusion": "success",
             "event": "workflow_dispatch",
             "path": ".github/workflows/ci.yml@refs/heads/main",
@@ -361,6 +362,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
     def _dispatch_run(self, run_id, **overrides):
         run = {
             "id": run_id,
+            "run_attempt": 1,
             "conclusion": "success",
             "event": "workflow_dispatch",
             "head_branch": "main",
@@ -390,19 +392,48 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not the latest snapshot.*latest is 300"):
             self._latest_check(200, runs)
 
-    def test_runs_that_cannot_hold_a_snapshot_do_not_count_as_newer(self):
+    def test_malformed_run_history_entry_fails_closed(self):
         runs = [
             self._dispatch_run(500),
-            self._dispatch_run(450, conclusion="failure"),
             self._dispatch_run(440, event="push"),
             self._dispatch_run(430, head_branch="other"),
             self._dispatch_run(420, path=".github/workflows/other.yml@refs/heads/main"),
-            self._dispatch_run("410"),
             "not-a-run",
             self._dispatch_run(300),
         ]
 
-        self.assertTrue(self._latest_check(300, runs)["source_is_latest"])
+        with self.assertRaisesRegex(ValueError, "entry 4 must be a JSON object"):
+            self._latest_check(300, runs)
+
+    def test_run_history_entry_with_non_integer_id_fails_closed(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run("410"),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "entry 1 must contain an integer run ID"):
+            self._latest_check(300, runs)
+
+    def test_newer_rerun_dispatch_blocks_snapshot_fallback(self):
+        runs = [
+            self._dispatch_run(500, run_attempt=1),
+            self._dispatch_run(450, run_attempt=2),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "run_attempt=1"):
+            self._latest_check(300, runs)
+
+    def test_newer_failed_dispatch_blocks_snapshot_fallback(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run(450, conclusion="failure"),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "newest workflow_dispatch snapshot run 450"):
+            self._latest_check(300, runs)
 
     def test_source_from_another_branch_is_rejected(self):
         runs = [self._dispatch_run(300, head_branch="other"), self._dispatch_run(200)]
@@ -410,7 +441,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not the latest snapshot.*latest is 200"):
             self._latest_check(300, runs)
 
-    def test_automatic_selection_picks_newest_eligible_run_and_skips_the_current_one(self):
+    def test_automatic_selection_refuses_newer_failed_run_and_skips_the_current_one(self):
         runs = [
             self._dispatch_run(500),
             self._dispatch_run(450, conclusion="failure"),
@@ -418,10 +449,12 @@ class QueueSnapshotValidationTests(unittest.TestCase):
             self._dispatch_run(200),
         ]
 
-        self.assertEqual(
-            latest_source_run_id({"workflow_runs": runs}, current_run_id=500, current_branch="main"),
-            300,
-        )
+        with self.assertRaisesRegex(ValueError, "newest workflow_dispatch snapshot run 450"):
+            latest_source_run_id(
+                {"workflow_runs": runs},
+                current_run_id=500,
+                current_branch="main",
+            )
 
     def test_automatic_selection_fails_closed_without_an_eligible_run(self):
         runs = [self._dispatch_run(500), self._dispatch_run(300, head_branch="other")]

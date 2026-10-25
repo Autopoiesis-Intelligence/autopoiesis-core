@@ -1,10 +1,11 @@
 name: CI
+run-name: "${{ github.event_name == 'workflow_dispatch' && inputs.restore_fault != '' && inputs.restore_fault != 'none' && format('Negative restore fault: {0}', inputs.restore_fault) || 'CI' }}"
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, feat/ci-restore-task-queue-artifact, integration/queue-restore-history-validation, claude/cl-020-a10-cycle]
+    branches: [main, feat/ci-restore-task-queue-artifact, integration/queue-restore-history-validation, claude/cl-020-a10-cycle, claude/cl-021-scheduled-cycle]
   workflow_dispatch:
     inputs:
       restore_run_id:
@@ -67,8 +68,38 @@ jobs:
           RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
         run: |
           if [[ "$RESTORE_RUN_ID" == "latest" ]]; then
-            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=workflow_dispatch&status=success&branch=${GITHUB_REF_NAME}&per_page=100" > .restore-candidates.json
-            RESTORE_RUN_ID=$(python -c 'import json, os; from autopoesis.queue_snapshot import latest_source_run_id; print(latest_source_run_id(json.load(open(".restore-candidates.json")), current_run_id=os.environ["GITHUB_RUN_ID"], current_branch=os.environ["GITHUB_REF_NAME"]))')
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=${GITHUB_REF_NAME}&per_page=100" > .restore-candidates-pages.json
+            RESTORE_RUN_ID=$(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from autopoesis.queue_snapshot import latest_source_run_id
+
+          pages = json.loads(
+              Path(".restore-candidates-pages.json").read_text(encoding="utf-8")
+          )
+          if not isinstance(pages, list) or any(
+              not isinstance(page, dict)
+              or not isinstance(page.get("workflow_runs"), list)
+              for page in pages
+          ):
+              raise SystemExit(
+                  "Refusing: paginated workflow run history is malformed or incomplete"
+              )
+          payload = {
+              "workflow_runs": [
+                  run for page in pages for run in page["workflow_runs"]
+              ]
+          }
+          print(
+              latest_source_run_id(
+                  payload,
+                  current_run_id=os.environ["GITHUB_RUN_ID"],
+                  current_branch=os.environ["GITHUB_REF_NAME"],
+              )
+          )
+          PY
+            )
             echo "Selected latest snapshot run ${RESTORE_RUN_ID} on branch ${GITHUB_REF_NAME}."
           elif [[ ! "$RESTORE_RUN_ID" =~ ^[0-9]+$ ]]; then
             echo "Invalid restore_run_id: enter the numeric ID of the latest successful snapshot run (digits only) or 'latest', not the field name or a URL. Leave blank when creating the seed run." >&2
@@ -111,14 +142,25 @@ jobs:
           runs_response = subprocess.run(
               [
                   "gh", "api",
+                  "--paginate",
+                  "--slurp",
                   f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/workflows/ci.yml/runs"
-                  f"?event=workflow_dispatch&status=success&branch={os.environ['GITHUB_REF_NAME']}&per_page=100",
+                  f"?event=workflow_dispatch&branch={os.environ['GITHUB_REF_NAME']}&per_page=100",
               ],
               check=True, capture_output=True, text=True,
           )
+          run_pages = json.loads(runs_response.stdout)
+          if not isinstance(run_pages, list) or any(
+              not isinstance(page, dict) or not isinstance(page.get("workflow_runs"), list)
+              for page in run_pages
+          ):
+              raise SystemExit("Refusing: workflow run history is malformed or incomplete")
+          run_history = {"workflow_runs": [
+              item for page in run_pages for item in page["workflow_runs"]
+          ]}
           provenance = require_latest_source_run(
               provenance,
-              json.loads(runs_response.stdout),
+              run_history,
               current_run_id=os.environ["GITHUB_RUN_ID"],
               current_branch=os.environ["GITHUB_REF_NAME"],
           )
@@ -232,6 +274,10 @@ jobs:
       - name: Validate workflow YAML syntax
         run: |
           ruby -e 'require "yaml"; files = Dir.glob(".github/workflows/*.{yml,yaml}").sort; abort "No workflow files found" if files.empty?; files.each { |f| YAML.load_file(f, aliases: true); puts "Parsed #{f}" }'
+      - name: Check shell syntax of every workflow run step
+        run: |
+          # Restore and probe steps run only on dispatch, so a syntax error there passes PR CI unseen.
+          ruby -e 'require "yaml"; require "tempfile"; bad = 0; Dir.glob(".github/workflows/*.{yml,yaml}").sort.each { |f| (YAML.load_file(f, aliases: true)["jobs"] || {}).each { |job, spec| (spec["steps"] || []).each { |step| next unless step["run"]; Tempfile.create("step") { |t| t.write(step["run"]); t.flush; out = IO.popen(["bash", "-n", t.path], err: [:child, :out], &:read); unless $?.success? && out.empty?; warn out; bad += 1; warn "Shell syntax error: #{f} job #{job} step #{step["name"].inspect}"; end } } } }; abort "#{bad} step(s) with shell syntax errors" if bad > 0; puts "All run steps pass bash -n."'
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Run file-based tasks

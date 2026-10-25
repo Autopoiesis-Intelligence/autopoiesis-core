@@ -15,7 +15,7 @@ from autopoesis.queue_snapshot import (
 )
 
 
-REPOSITORY = "Autopoiesis-Intelligence/autopoesis-core"
+REPOSITORY = "Autopoiesis-Intelligence/autopoiesis-core"
 SHA = "a" * 40
 RUN_ID = 12345
 ARTIFACT_DIGEST = "sha256:" + "b" * 64
@@ -47,6 +47,7 @@ class QueueSnapshotTests(unittest.TestCase):
     def valid_run(self):
         return {
             "id": RUN_ID,
+            "run_attempt": 1,
             "conclusion": "success",
             "event": "workflow_dispatch",
             "path": ".github/workflows/ci.yml@refs/heads/main",
@@ -226,6 +227,16 @@ class QueueSnapshotTests(unittest.TestCase):
                         self.snapshot, source_run_id=run_id,
                         source_head_sha=sha, source_repository=repository,
                     )
+
+    def test_restore_run_rejects_rerun_attempt(self):
+        run = self.valid_run()
+        run["run_attempt"] = 2
+        with self.assertRaisesRegex(ValueError, "original attempt"):
+            validate_restore_source_run(
+                run,
+                requested_run_id=RUN_ID,
+                expected_repository=REPOSITORY,
+            )
 
     def test_restore_run_accepts_valid_workflow_dispatch_run(self):
         result = self.valid_provenance()
