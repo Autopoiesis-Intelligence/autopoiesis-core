@@ -2,17 +2,18 @@
 
 import unittest
 
-from autopoesis.scheduled_state import select_prior_successful_run
+from autopoesis.scheduled_state import DISABLED_RUN_TITLE, select_prior_successful_run
 
 
 WORKFLOW = ".github/workflows/autopoiesis-cycle.yml"
 
 
-def run(run_id, number, *, conclusion="success", branch="main", path=WORKFLOW):
+def run(run_id, number, *, conclusion="success", branch="main", path=WORKFLOW, title="Autopoiesis scheduled cycle", attempt=1):
     return {
         "id": run_id,
         "run_number": number,
-        "run_attempt": 1,
+        "run_attempt": attempt,
+        "display_title": title,
         "conclusion": conclusion,
         "head_branch": branch,
         "path": path,
@@ -64,6 +65,37 @@ class ScheduledStateSelectionTests(unittest.TestCase):
         ]}]
         selected = select_prior_successful_run(paused_after_success, current_run_id=12, bootstrap=False)
         self.assertEqual(selected["id"], 10)
+
+    def test_emergency_stop_failures_do_not_block_the_cycle_after_re_enabling(self):
+        stopped = [{"workflow_runs": [
+            run(10, 10),
+            run(11, 11, conclusion="failure", title=DISABLED_RUN_TITLE),
+            run(12, 12, conclusion="failure", title=DISABLED_RUN_TITLE),
+        ]}]
+        self.assertEqual(select_prior_successful_run(stopped, current_run_id=13, bootstrap=False)["id"], 10)
+        with self.assertRaisesRegex(ValueError, "Refusing bootstrap"):
+            select_prior_successful_run(stopped, current_run_id=13, bootstrap=True)
+        stopped_before_any_cycle = [{"workflow_runs": [run(11, 11, conclusion="failure", title=DISABLED_RUN_TITLE)]}]
+        self.assertIsNone(select_prior_successful_run(stopped_before_any_cycle, current_run_id=12, bootstrap=True))
+
+        real_failure_after_stop = [{"workflow_runs": [
+            run(10, 10),
+            run(11, 11, conclusion="failure", title=DISABLED_RUN_TITLE),
+            run(12, 12, conclusion="failure"),
+        ]}]
+        with self.assertRaisesRegex(ValueError, "newest run 12"):
+            select_prior_successful_run(real_failure_after_stop, current_run_id=13, bootstrap=False)
+
+        for odd in (run(11, 11, conclusion="success", title=DISABLED_RUN_TITLE),
+                    run(11, 11, conclusion="failure", title=DISABLED_RUN_TITLE, attempt=2),
+                    run(11, 11, conclusion=None, title=DISABLED_RUN_TITLE)):
+            with self.assertRaisesRegex(ValueError, "Emergency-stop run 11"):
+                select_prior_successful_run([{"workflow_runs": [run(10, 10), odd]}], current_run_id=13, bootstrap=False)
+
+        untitled = run(11, 11)
+        del untitled["display_title"]
+        with self.assertRaisesRegex(ValueError, "display_title"):
+            select_prior_successful_run([{"workflow_runs": [untitled]}], current_run_id=13, bootstrap=False)
 
     def test_bootstrap_refused_after_failed_only_history(self):
         pages = [{"workflow_runs": [run(11, 11, conclusion="failure")]}]
