@@ -391,12 +391,14 @@ class EvolutionCoreTests(unittest.TestCase):
             (package / "__init__.py").write_text("", encoding="utf-8")
             (package / "example.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "between 1 and 30 seconds"):
-                verify_test_patch_in_sandbox(
-                    {"id": "DISC-TIMEOUT", "source": "autopoesis/example.py"},
-                    root,
-                    timeout_seconds=999,
-                )
+            for invalid_timeout in (999, True, False, 1.0, "10"):
+                with self.subTest(timeout_seconds=invalid_timeout):
+                    with self.assertRaisesRegex(ValueError, "between 1 and 30 seconds"):
+                        verify_test_patch_in_sandbox(
+                            {"id": "DISC-TIMEOUT", "source": "autopoesis/example.py"},
+                            root,
+                            timeout_seconds=invalid_timeout,
+                        )
 
 if __name__ == "__main__":
     unittest.main()

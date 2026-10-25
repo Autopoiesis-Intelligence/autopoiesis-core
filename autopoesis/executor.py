@@ -232,7 +232,7 @@ def verify_test_patch_in_sandbox(
     timeout_seconds: int = 10,
 ) -> dict[str, Any]:
     """Execute only the generated import test in a disposable copy of the package."""
-    if not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 30:
+    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 30:
         raise ValueError("Sandbox test timeout must be between 1 and 30 seconds")
 
     root = repository_root.resolve()
