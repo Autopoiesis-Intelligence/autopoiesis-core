@@ -50,14 +50,27 @@ jobs:
           # Read every API page: bootstrap is allowed only when history is complete.
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/autopoiesis-cycle.yml/runs?branch=main&status=completed&per_page=100" > .cycle-runs-pages.json
           python - <<'PY'
-          import json, os, re
+          import json, os, re, subprocess
           from pathlib import Path
-          from autopoesis.scheduled_state import select_prior_successful_run
+          from autopoesis.scheduled_state import DISABLED_RUN_TITLE, select_prior_successful_run, validate_emergency_stop_job_history
           pages = json.loads(Path(".cycle-runs-pages.json").read_text())
           bootstrap = os.environ.get("BOOTSTRAP", "false").lower() == "true"
+          verified_disabled_run_ids = set()
+          # Titles identify candidates only; step conclusions prove the guard stopped execution.
+          for page in pages:
+              for run in page.get("workflow_runs", []):
+                  if (isinstance(run, dict) and run.get("display_title") == DISABLED_RUN_TITLE
+                      and run.get("head_branch") == "main" and isinstance(run.get("path"), str)
+                      and run["path"].split("@", 1)[0] == ".github/workflows/autopoiesis-cycle.yml"):
+                      result = subprocess.run(["gh", "api", "--paginate", "--slurp",
+                          "repos/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + str(run["id"]) + "/jobs?per_page=100"],
+                          check=True, capture_output=True, text=True)
+                      validate_emergency_stop_job_history(json.loads(result.stdout))
+                      verified_disabled_run_ids.add(run["id"])
           try:
               prior = select_prior_successful_run(
-                  pages, current_run_id=int(os.environ["GITHUB_RUN_ID"]), bootstrap=bootstrap
+                  pages, current_run_id=int(os.environ["GITHUB_RUN_ID"]), bootstrap=bootstrap,
+                  verified_disabled_run_ids=verified_disabled_run_ids
               )
           except ValueError as exc:
               raise SystemExit(str(exc)) from exc
