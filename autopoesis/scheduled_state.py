@@ -44,6 +44,10 @@ def validate_emergency_stop_job_history(payload: Any) -> bool:
         raise ValueError("emergency-stop guard or checkout step is missing or duplicated")
     guard_index = names.index(guard_name)
     checkout_index = names.index(checkout_name)
+    # GitHub emits runner setup before workflow steps. The emergency stop must be the
+    # first authored workflow step, so future edits cannot add side effects before it.
+    if guard_index != 1 or names[0] != "Set up job":
+        raise ValueError("emergency-stop guard is not the first workflow step")
     if checkout_index <= guard_index:
         raise ValueError("checkout appears before the emergency-stop guard")
     if steps[guard_index].get("conclusion") != "failure":
