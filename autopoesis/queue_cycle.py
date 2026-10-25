@@ -31,7 +31,9 @@ def source_tree_digest(root: Path) -> str:
 def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     """Select, execute, verify and finalize at most one supported queue task.
 
-    Outcomes are COMPLETED, NO_WORK, RETRYABLE_FAILURE, or REJECTED.
+    Outcomes are COMPLETED, NO_WORK, RETRYABLE_FAILURE, REJECTED, or
+    RECOVERY_REQUIRED. The latter means the coordinator cannot confirm a safe
+    persisted state and requires inspection; it is not a terminal task status.
     A failed attempt returns work to OPEN until MAX_ATTEMPTS, then REJECTED.
     DONE is written only after the verifier's PASS evidence is recorded and
     the tested source digest still matches.
@@ -53,11 +55,15 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     item = next((entry for entry in queue["items"] if entry.get("id") == task_id), None)
     lease = selection.get("lease")
     token = lease.get("token") if isinstance(lease, dict) else None
-    if item is None or not isinstance(token, str):
+    if item is None or not isinstance(token, str) or not token:
+        # Selection metadata is not proof that a valid persisted lease exists.
+        # Do not report a terminal task rejection when lifecycle state was not
+        # transitioned; leave the queue untouched and require recovery review.
         return {
-            "status": "REJECTED",
+            "status": "RECOVERY_REQUIRED",
             "task_id": task_id,
-            "reason": "selected queue item or lease token could not be reloaded",
+            "reason": "selected queue item or valid lease token could not be reloaded",
+            "reopened": False,
         }
 
     try:
