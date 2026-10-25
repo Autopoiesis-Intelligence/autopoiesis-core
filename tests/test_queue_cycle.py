@@ -96,15 +96,20 @@ class BoundedQueueCycleTests(unittest.TestCase):
         ))
 
     def test_missing_selected_lease_reports_recovery_required_without_rejection(self):
-        # Simulate inconsistent selection metadata: a task id is returned but
-        # there is no valid persisted lease token. The coordinator must not
-        # claim REJECTED without a persisted terminal transition.
+        # First create a real persisted selection/lease. Then simulate the
+        # selector losing its lease metadata; the coordinator must not claim
+        # REJECTED or mutate the still-SELECTED queue item.
+        queue_cycle.select_next_task_file(
+            self.queue_path,
+            queue_cycle.OWNER,
+            types=queue_cycle.SUPPORTED_CYCLE_TYPES,
+        )
+        before = self.queue_path.read_bytes()
         with mock.patch.object(
             queue_cycle,
             "select_next_task_file",
             return_value={"selected": "CYCLE-001", "lease": None, "deferred": []},
         ):
-            before = self.queue_path.read_bytes()
             result = run_one_queue_cycle(self.queue_path)
 
         self.assertEqual(result["status"], "RECOVERY_REQUIRED")
@@ -112,7 +117,7 @@ class BoundedQueueCycleTests(unittest.TestCase):
         self.assertNotEqual(result["status"], "REJECTED")
         queue = load_queue(self.queue_path)
         item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
-        self.assertEqual(item["status"], "OPEN")
+        self.assertEqual(item["status"], "SELECTED")
         self.assertEqual(self.queue_path.read_bytes(), before)
 
     def test_failed_recovery_transition_reports_recovery_required(self):
