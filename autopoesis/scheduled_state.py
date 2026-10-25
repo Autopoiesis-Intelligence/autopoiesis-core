@@ -109,7 +109,7 @@ def select_prior_successful_run(
                 )
             if run["id"] not in verified_disabled_run_ids:
                 raise ValueError(
-                    f"Emergency-stop run {run['id']} lacks verified guard/step evidence"
+                    f"Emergency-stop run {run['id']} has no verified job history"
                 )
     relevant = [
         run
