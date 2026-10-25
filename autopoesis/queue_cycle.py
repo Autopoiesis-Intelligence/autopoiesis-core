@@ -21,6 +21,8 @@ from run_tasks import ROOT, execute_task
 
 SUPPORTED_CYCLE_TYPES = frozenset({"verify_test_patch_sandbox"})
 OWNER = "bounded-queue-cycle-v1"
+
+
 def source_tree_digest(root: Path) -> str:
     """Use the executor's digest format so tested and observed revisions are comparable."""
     return executor_source_tree_digest(root)
