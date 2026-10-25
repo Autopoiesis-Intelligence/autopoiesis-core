@@ -1,5 +1,6 @@
 """Focused tests for queue snapshot integrity and restore provenance."""
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -83,7 +84,11 @@ class QueueSnapshotTests(unittest.TestCase):
         expected = {"version": 1, "items": [], "history": []}
 
         result = install_validated_queue_snapshot(
-            self.snapshot, destination, expected_queue=expected
+            self.snapshot,
+            destination,
+            expected_queue=expected,
+            expected_sha256=hashlib.sha256(self.snapshot.read_bytes()).hexdigest(),
+            expected_size_bytes=self.snapshot.stat().st_size,
         )
 
         self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), expected)
@@ -105,6 +110,8 @@ class QueueSnapshotTests(unittest.TestCase):
                     self.snapshot,
                     destination,
                     expected_queue={"version": 1, "items": [], "history": []},
+                    expected_sha256=hashlib.sha256(self.snapshot.read_bytes()).hexdigest(),
+                    expected_size_bytes=self.snapshot.stat().st_size,
                 )
 
         self.assertEqual(destination.read_bytes(), old_bytes)
@@ -121,6 +128,8 @@ class QueueSnapshotTests(unittest.TestCase):
                 self.snapshot,
                 destination,
                 expected_queue={"version": 1, "items": [{"id": "unexpected"}], "history": []},
+                expected_sha256=hashlib.sha256(self.snapshot.read_bytes()).hexdigest(),
+                expected_size_bytes=self.snapshot.stat().st_size,
             )
 
         self.assertEqual(destination.read_bytes(), old_bytes)
