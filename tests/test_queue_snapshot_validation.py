@@ -9,6 +9,7 @@ from autopoesis.core import EvolutionError
 from autopoesis.queue_snapshot import (
     bind_source_artifact,
     create_queue_snapshot_manifest,
+    install_validated_queue_snapshot,
     latest_source_run_id,
     require_latest_source_run,
     validate_queue_snapshot,
@@ -20,6 +21,31 @@ from run_tasks import run
 
 
 class QueueSnapshotValidationTests(unittest.TestCase):
+    def test_staged_snapshot_digest_mismatch_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = root / "source-TASK_QUEUE.json"
+            destination = root / "TASK_QUEUE.json"
+            snapshot.write_text(
+                '{"version":1,"items":[],"history":[]}',
+                encoding="utf-8",
+            )
+            original_destination = b'{ "version": 1, "items": [], "history": [] }\n'
+            destination.write_bytes(original_destination)
+            expected_queue = load_queue(snapshot)
+
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                install_validated_queue_snapshot(
+                    snapshot,
+                    destination,
+                    expected_queue=expected_queue,
+                    expected_sha256="0" * 64,
+                    expected_size_bytes=snapshot.stat().st_size,
+                )
+
+            self.assertEqual(destination.read_bytes(), original_destination)
+            self.assertEqual(load_queue(destination), expected_queue)
+
     def test_corrupt_json_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / "TASK_QUEUE.json"
