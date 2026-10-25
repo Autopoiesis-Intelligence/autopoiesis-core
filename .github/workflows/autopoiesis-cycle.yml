@@ -173,6 +173,7 @@ jobs:
               f"SHA-256 {result['task_queue_sha256']}, "
               f"size {installed['size_bytes']} bytes."
           )
+          PY
 
       - name: Initialize the first queue (explicit bootstrap only)
         if: ${{ steps.state.outputs.source_run_id == 'bootstrap' }}
@@ -187,6 +188,7 @@ jobs:
               "evidence": "Explicit initial seed for the scheduled cycle; verifies the bounded runner path."
           }])
           print("Initialized one allowlisted verification task.")
+          PY
 
       - name: Run exactly one bounded cycle
         id: cycle
