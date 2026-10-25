@@ -34,7 +34,7 @@ class BoundedQueueCycleTests(unittest.TestCase):
             }],
         )
 
-    def _fixture_handler(self, task, queue_path, verification_status="PASS"):
+    def _fixture_handler(self, task, queue_path, verification_status="PASS", reported_revision=None):
         task_id = task["queue_task_id"]
         revision = queue_cycle.source_tree_digest(queue_cycle.ROOT / "autopoesis")
         record_verification_file(
@@ -53,7 +53,7 @@ class BoundedQueueCycleTests(unittest.TestCase):
             "status": "PASS" if verification_status == "PASS" else "FAIL",
             "result": {
                 "verification_status": verification_status,
-                "source_tree_sha256": revision,
+                "source_tree_sha256": reported_revision or revision,
             },
         }
 
@@ -88,6 +88,27 @@ class BoundedQueueCycleTests(unittest.TestCase):
         item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
         self.assertEqual(item["status"], "OPEN")
         self.assertEqual(item["attempts"], 1)
+        self.assertFalse(any(
+            event.get("event") == "STATUS_CHANGED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("to") == "DONE"
+            for event in queue["history"]
+        ))
+
+    def test_mismatched_executor_digest_reopens_task_without_done(self):
+        with mock.patch.object(
+            queue_cycle, "execute_task",
+            side_effect=lambda task, path: self._fixture_handler(
+                task, path, "PASS", reported_revision="f" * 64
+            ),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertEqual(result["status"], "RETRYABLE_FAILURE")
+        self.assertIn("mismatched", result["reason"])
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "OPEN")
         self.assertFalse(any(
             event.get("event") == "STATUS_CHANGED"
             and event.get("task_id") == "CYCLE-001"
