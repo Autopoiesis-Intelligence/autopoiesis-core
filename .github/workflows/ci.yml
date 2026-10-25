@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, feat/ci-restore-task-queue-artifact, integration/queue-restore-history-validation]
+    branches: [main, feat/ci-restore-task-queue-artifact, integration/queue-restore-history-validation, claude/cl-020-a10-cycle]
   workflow_dispatch:
     inputs:
       restore_run_id:
@@ -229,6 +229,9 @@ jobs:
         run: |
           echo "Injected restore fault '${{ inputs.restore_fault }}' was NOT rejected by snapshot validation." >&2
           exit 1
+      - name: Validate workflow YAML syntax
+        run: |
+          ruby -e 'require "yaml"; files = Dir.glob(".github/workflows/*.{yml,yaml}").sort; abort "No workflow files found" if files.empty?; files.each { |f| YAML.load_file(f, aliases: true); puts "Parsed #{f}" }'
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Run file-based tasks
@@ -238,9 +241,11 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          from autopoesis.executor import source_tree_digest
           from autopoesis.task_queue import (
+              advance_task_file,
+              current_attempt,
               update_queue_file,
-              record_outcome_file,
               record_verification_file,
           )
 
@@ -253,12 +258,17 @@ jobs:
               "description": "Synthetic verification item; not a production task.",
           }
           update_queue_file(queue_path, [probe])
-          record_outcome_file(
-              queue_path,
-              probe["id"],
-              "DONE",
-              "synthetic CI fixture for cross-run restore verification",
+          note = "synthetic CI fixture for cross-run restore verification"
+          revision = source_tree_digest(Path("autopoesis"))
+          # Walk the governed lifecycle: DONE is accepted only after a PASS since IN_PROGRESS.
+          token = advance_task_file(queue_path, probe["id"], "SELECTED", note, owner="ci-seed-probe")["lease"]["token"]
+          advance_task_file(queue_path, probe["id"], "IN_PROGRESS", note, token=token)
+          record_verification_file(
+              queue_path, probe["id"], "PASS", "CI_SYNTHETIC_PERSISTENCE_PROBE",
+              source=probe["source"], attempt=current_attempt(queue_path, probe["id"]), revision=revision,
+              token=token,
           )
+          advance_task_file(queue_path, probe["id"], "DONE", note, token=token, revision=revision)
           record_verification_file(
               queue_path,
               "CI-RESTORE-VERIFICATION-PROBE",

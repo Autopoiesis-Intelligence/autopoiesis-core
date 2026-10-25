@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from autopoesis.core import EvolutionError
 from autopoesis.task_queue import (
+    advance_task_file,
     load_queue,
-    record_outcome_file,
     record_verification_file,
     update_queue_file,
 )
@@ -59,7 +59,7 @@ class QueueDurabilityTests(unittest.TestCase):
             with self.subTest(target=target):
                 with patch(target, side_effect=OSError("disk full")):
                     with self.assertRaisesRegex(OSError, "disk full"):
-                        record_outcome_file(self.path, "TASK-1", "DONE", "must not persist")
+                        advance_task_file(self.path, "TASK-1", "SELECTED", "must not persist", owner="unit-test")
                 self.assertEqual(self.path.read_bytes(), original)
                 self.assertEqual(list(self.path.parent.glob(f".{self.path.name}.*.tmp")), [])
 
@@ -67,7 +67,7 @@ class QueueDurabilityTests(unittest.TestCase):
         original = self._seed()
         with patch("autopoesis.task_queue.os.replace", side_effect=OSError("disk error")):
             with self.assertRaisesRegex(OSError, "disk error"):
-                record_verification_file(self.path, "TASK-1", "PASS", "unit")
+                record_verification_file(self.path, "CORE-007", "PASS", "unit")
         self.assertEqual(self.path.read_bytes(), original)
 
     def test_concurrent_writers_never_lose_an_acknowledged_update(self):
@@ -107,10 +107,10 @@ class QueueDurabilityTests(unittest.TestCase):
         original = self._seed()
         with queue_write_lock(self.path):
             with self.assertRaisesRegex(EvolutionError, "locked by another writer"):
-                record_outcome_file(self.path, "TASK-1", "DONE", "concurrent")
+                advance_task_file(self.path, "TASK-1", "SELECTED", "concurrent", owner="unit-test")
         self.assertEqual(self.path.read_bytes(), original)
-        record_outcome_file(self.path, "TASK-1", "DONE", "after release")
-        self.assertEqual(load_queue(self.path)["items"][0]["status"], "DONE")
+        advance_task_file(self.path, "TASK-1", "SELECTED", "after release", owner="unit-test")
+        self.assertEqual(load_queue(self.path)["items"][0]["status"], "SELECTED")
 
 
 if __name__ == "__main__":

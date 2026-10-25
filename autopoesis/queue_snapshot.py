@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +108,57 @@ def validate_queue_snapshot(
         "task_queue_sha256": actual_digest,
         "task_queue_size_bytes": len(snapshot),
     }
+
+
+def install_validated_queue_snapshot(
+    snapshot_path: Path,
+    destination_path: Path,
+    *,
+    expected_queue: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically install a previously validated queue snapshot.
+
+    Stage in the destination directory, fsync and re-validate before replacing
+    the destination. Any failure before os.replace leaves the old destination
+    untouched.
+    """
+    if not snapshot_path.is_file():
+        raise ValueError("Queue snapshot file is missing")
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    staged_path: Path | None = None
+    try:
+        fd, staged_name = tempfile.mkstemp(
+            prefix=f".{destination_path.name}.",
+            suffix=".staged",
+            dir=destination_path.parent,
+        )
+        staged_path = Path(staged_name)
+        with os.fdopen(fd, "wb") as staged:
+            with snapshot_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    staged.write(chunk)
+            staged.flush()
+            os.fsync(staged.fileno())
+
+        staged_queue = load_queue(staged_path)
+        if staged_queue != expected_queue:
+            raise ValueError("Staged queue differs from validated source queue")
+
+        os.replace(staged_path, destination_path)
+        staged_path = None
+        installed_queue = load_queue(destination_path)
+        if installed_queue != expected_queue:
+            raise ValueError("Installed queue differs from validated source queue")
+        return {
+            "destination": str(destination_path),
+            "size_bytes": destination_path.stat().st_size,
+        }
+    finally:
+        if staged_path is not None:
+            try:
+                staged_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def validate_restore_source_run(

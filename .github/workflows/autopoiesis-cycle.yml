@@ -1,0 +1,216 @@
+name: Autopoiesis scheduled cycle
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: "Initialize the queue only if this workflow has no prior successful snapshot"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: autopoiesis-cycle-main
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    if: ${{ github.repository == 'Autopoiesis-Intelligence/autopoiesis-core' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # A failed guard, rather than a fully skipped workflow, keeps disabled runs
+      # out of the successful-run history used to select the next persisted snapshot.
+      - name: Enforce emergency stop
+        if: ${{ vars.AUTOPOIESIS_CYCLE_DISABLED == 'true' }}
+        run: |
+          echo "Autopoiesis cycle disabled by AUTOPOIESIS_CYCLE_DISABLED=true; refusing run." >&2
+          exit 1
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Select previous successful state or explicit bootstrap
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOOTSTRAP: ${{ inputs.bootstrap || false }}
+        run: |
+          set -euo pipefail
+          # Read every API page: bootstrap is allowed only when history is complete.
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/workflows/autopoiesis-cycle.yml/runs?branch=main&status=completed&per_page=100" > .cycle-runs-pages.json
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          from autopoesis.scheduled_state import select_prior_successful_run
+          pages = json.loads(Path(".cycle-runs-pages.json").read_text())
+          bootstrap = os.environ.get("BOOTSTRAP", "false").lower() == "true"
+          try:
+              prior = select_prior_successful_run(
+                  pages, current_run_id=int(os.environ["GITHUB_RUN_ID"]), bootstrap=bootstrap
+              )
+          except ValueError as exc:
+              raise SystemExit(str(exc)) from exc
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              if prior:
+                  run = prior
+                  if not isinstance(run.get("head_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]):
+                      raise SystemExit("Refusing: source run has no valid lowercase SHA-1 head SHA")
+                  f.write(f"source_run_id={run['id']}\n")
+                  f.write(f"source_head_sha={run['head_sha']}\n")
+                  print(f"Selected prior run {run['id']} at {run['head_sha']}.")
+              else:
+                  f.write("source_run_id=bootstrap\n")
+                  print("Explicit one-time bootstrap accepted; no prior successful cycle exists.")
+          PY
+
+      - name: Verify source run and artifact
+        if: ${{ steps.state.outputs.source_run_id != 'bootstrap' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ steps.state.outputs.source_run_id }}
+          SOURCE_HEAD_SHA: ${{ steps.state.outputs.source_head_sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > .cycle-source.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" > .cycle-artifacts.json
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          run = json.loads(Path(".cycle-source.json").read_text())
+          payload = json.loads(Path(".cycle-artifacts.json").read_text())
+          repo = run.get("repository")
+          if run.get("id") != int(os.environ["SOURCE_RUN_ID"]):
+              raise SystemExit("Refusing: source run ID mismatch")
+          if run.get("conclusion") != "success" or run.get("head_branch") != "main":
+              raise SystemExit("Refusing: source run is not successful on main")
+          if run.get("path", "").split("@", 1)[0] != ".github/workflows/autopoiesis-cycle.yml":
+              raise SystemExit("Refusing: source run belongs to another workflow")
+          if run.get("event") not in {"schedule", "workflow_dispatch"}:
+              raise SystemExit("Refusing: unexpected source event")
+          if not isinstance(repo, dict) or repo.get("full_name") != os.environ["GITHUB_REPOSITORY"]:
+              raise SystemExit("Refusing: source repository mismatch")
+          sha = run.get("head_sha")
+          if sha != os.environ["SOURCE_HEAD_SHA"] or not re.fullmatch(r"[0-9a-f]{40}", str(sha)):
+              raise SystemExit("Refusing: source SHA mismatch or invalid SHA")
+          artifacts = payload.get("artifacts")
+          if not isinstance(artifacts, list):
+              raise SystemExit("Refusing: malformed artifact list")
+          matches = [a for a in artifacts if isinstance(a, dict) and a.get("name") == "autopoiesis-cycle-state" and not a.get("expired", True)]
+          if len(matches) != 1:
+              raise SystemExit("Refusing: source must have exactly one unexpired state artifact")
+          artifact = matches[0]
+          binding = artifact.get("workflow_run")
+          if not isinstance(binding, dict) or str(binding.get("id")) != str(run["id"]) or binding.get("head_sha") != sha:
+              raise SystemExit("Refusing: artifact is not bound to the source run and SHA")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("digest", ""))):
+              raise SystemExit("Refusing: artifact archive digest missing or invalid")
+          print(f"Verified source run {run['id']}, SHA {sha}, artifact {artifact.get('id')}, digest {artifact['digest']}.")
+          PY
+
+      - name: Download previous queue snapshot
+        if: ${{ steps.state.outputs.source_run_id != 'bootstrap' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: autopoiesis-cycle-state
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.state.outputs.source_run_id }}
+          path: .cycle-restore
+
+      - name: Validate and install previous queue snapshot
+        if: ${{ steps.state.outputs.source_run_id != 'bootstrap' }}
+        env:
+          SOURCE_RUN_ID: ${{ steps.state.outputs.source_run_id }}
+          SOURCE_HEAD_SHA: ${{ steps.state.outputs.source_head_sha }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from autopoesis.queue_snapshot import (
+              install_validated_queue_snapshot,
+              validate_queue_snapshot,
+          )
+          snapshot = Path(".cycle-restore/TASK_QUEUE.json")
+          manifest = Path(".cycle-restore/QUEUE_SNAPSHOT_MANIFEST.json")
+          result = validate_queue_snapshot(
+              snapshot, manifest,
+              source_run_id=os.environ["SOURCE_RUN_ID"],
+              source_head_sha=os.environ["SOURCE_HEAD_SHA"],
+              source_repository=os.environ["GITHUB_REPOSITORY"],
+          )
+          installed = install_validated_queue_snapshot(
+              snapshot,
+              Path("TASK_QUEUE.json"),
+              expected_queue=result["queue"],
+          )
+          print(
+              "Restored validated queue atomically; "
+              f"SHA-256 {result['task_queue_sha256']}, "
+              f"size {installed['size_bytes']} bytes."
+          )
+
+      - name: Initialize the first queue (explicit bootstrap only)
+        if: ${{ steps.state.outputs.source_run_id == 'bootstrap' }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from autopoesis.task_queue import update_queue_file
+          update_queue_file(Path("TASK_QUEUE.json"), [{
+              "id": "CYCLE-BOOTSTRAP-VERIFY",
+              "type": "verify_test_scaffold",
+              "source": "autopoesis/orchestrator.py",
+              "evidence": "Explicit initial seed for the scheduled cycle; verifies the bounded runner path."
+          }])
+          print("Initialized one allowlisted verification task.")
+
+      - name: Run exactly one bounded cycle
+        id: cycle
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m autopoesis.orchestrator --queue TASK_QUEUE.json --owner github-actions --root . --disable-file .autopoiesis-cycle-disabled --budget-seconds 600 | tee CYCLE_RESULT.json
+
+      - name: Create state manifest
+        if: always() && hashFiles('TASK_QUEUE.json') != ''
+        env:
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_HEAD_SHA: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from autopoesis.queue_snapshot import create_queue_snapshot_manifest
+          manifest = create_queue_snapshot_manifest(
+              Path("TASK_QUEUE.json"),
+              source_run_id=os.environ["SOURCE_RUN_ID"],
+              source_head_sha=os.environ["SOURCE_HEAD_SHA"],
+              source_repository=os.environ["SOURCE_REPOSITORY"],
+          )
+          Path("QUEUE_SNAPSHOT_MANIFEST.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Persist next queue state
+        if: always() && hashFiles('TASK_QUEUE.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: autopoiesis-cycle-state
+          path: |
+            TASK_QUEUE.json
+            QUEUE_SNAPSHOT_MANIFEST.json
+            CYCLE_RESULT.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Propagate cycle refusal
+        if: ${{ steps.cycle.outcome == 'failure' }}
+        run: exit 1

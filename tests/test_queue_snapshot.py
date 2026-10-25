@@ -4,10 +4,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from autopoesis.queue_snapshot import (
     bind_source_artifact,
     create_queue_snapshot_manifest,
+    install_validated_queue_snapshot,
     validate_queue_snapshot,
     validate_restore_source_run,
 )
@@ -71,6 +73,57 @@ class QueueSnapshotTests(unittest.TestCase):
                 "workflow_run": {"id": RUN_ID, "head_sha": SHA},
             }]
         }
+
+    def test_atomic_install_replaces_destination_with_validated_queue(self):
+        destination = self.root / "installed" / "TASK_QUEUE.json"
+        destination.parent.mkdir()
+        old_bytes = b'{"version": 1, "items": [], "history": []}\\n'
+        destination.write_bytes(old_bytes)
+        expected = {"version": 1, "items": [], "history": []}
+
+        result = install_validated_queue_snapshot(
+            self.snapshot, destination, expected_queue=expected
+        )
+
+        self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), expected)
+        self.assertEqual(result["size_bytes"], self.snapshot.stat().st_size)
+        self.assertFalse(list(destination.parent.glob("*.staged")))
+
+    def test_atomic_install_replace_failure_preserves_existing_destination(self):
+        destination = self.root / "installed" / "TASK_QUEUE.json"
+        destination.parent.mkdir()
+        old_bytes = b'{"version": 1, "items": [], "history": []}\\n'
+        destination.write_bytes(old_bytes)
+
+        with patch(
+            "autopoesis.queue_snapshot.os.replace",
+            side_effect=OSError("simulated replace failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "simulated replace failure"):
+                install_validated_queue_snapshot(
+                    self.snapshot,
+                    destination,
+                    expected_queue={"version": 1, "items": [], "history": []},
+                )
+
+        self.assertEqual(destination.read_bytes(), old_bytes)
+        self.assertEqual(list(destination.parent.glob("*.staged")), [])
+
+    def test_atomic_install_rejects_staged_queue_mismatch_without_replacing(self):
+        destination = self.root / "installed" / "TASK_QUEUE.json"
+        destination.parent.mkdir()
+        old_bytes = b'{"version": 1, "items": [], "history": []}\\n'
+        destination.write_bytes(old_bytes)
+
+        with self.assertRaisesRegex(ValueError, "Staged queue differs"):
+            install_validated_queue_snapshot(
+                self.snapshot,
+                destination,
+                expected_queue={"version": 1, "items": [{"id": "unexpected"}], "history": []},
+            )
+
+        self.assertEqual(destination.read_bytes(), old_bytes)
+        self.assertEqual(list(destination.parent.glob("*.staged")), [])
 
     def test_manifest_binds_snapshot_bytes_and_source(self):
         manifest = self.valid_manifest()

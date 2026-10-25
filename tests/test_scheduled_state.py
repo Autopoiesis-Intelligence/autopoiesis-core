@@ -1,0 +1,85 @@
+"""Behavioral tests for scheduled-cycle source selection."""
+
+import unittest
+
+from autopoesis.scheduled_state import select_prior_successful_run
+
+
+WORKFLOW = ".github/workflows/autopoiesis-cycle.yml"
+
+
+def run(run_id, number, *, conclusion="success", branch="main", path=WORKFLOW):
+    return {
+        "id": run_id,
+        "run_number": number,
+        "conclusion": conclusion,
+        "head_branch": branch,
+        "path": path,
+        "head_sha": f"{run_id:040x}",
+    }
+
+
+class ScheduledStateSelectionTests(unittest.TestCase):
+    def test_finds_latest_success_after_first_api_page(self):
+        first_page = {"workflow_runs": [run(i, i) for i in range(1, 101)]}
+        second_page = {"workflow_runs": [run(101, 101)]}
+        selected = select_prior_successful_run(
+            [first_page, second_page], current_run_id=102, bootstrap=False
+        )
+        self.assertEqual(selected["id"], 101)
+
+    def test_newer_failed_cycle_refuses_rollback_to_older_snapshot(self):
+        pages = [{"workflow_runs": [
+            run(10, 10, conclusion="success"),
+            run(11, 11, conclusion="failure"),
+        ]}]
+        with self.assertRaisesRegex(ValueError, "unresolved prior cycle"):
+            select_prior_successful_run(pages, current_run_id=12, bootstrap=False)
+
+    def test_newer_cancelled_cycle_refuses_rollback(self):
+        pages = [{"workflow_runs": [
+            run(10, 10, conclusion="success"),
+            run(11, 11, conclusion="cancelled"),
+        ]}]
+        with self.assertRaisesRegex(ValueError, "newest run 11"):
+            select_prior_successful_run(pages, current_run_id=12, bootstrap=False)
+
+    def test_rerun_attempt_is_never_selected_as_persisted_state(self):
+        pages = [{"workflow_runs": [
+            run(10, 10, conclusion="success"),
+            {**run(11, 11, conclusion="success"), "run_attempt": 2},
+        ]}]
+        with self.assertRaisesRegex(ValueError, "run_attempt=2"):
+            select_prior_successful_run(pages, current_run_id=12, bootstrap=False)
+
+    def test_bootstrap_refused_after_failed_only_history(self):
+        pages = [{"workflow_runs": [run(11, 11, conclusion="failure")]}]
+        with self.assertRaisesRegex(ValueError, "unresolved prior cycle"):
+            select_prior_successful_run(pages, current_run_id=12, bootstrap=True)
+
+    def test_bootstrap_refused_after_cancelled_only_history(self):
+        pages = [{"workflow_runs": [run(11, 11, conclusion="cancelled")]}]
+        with self.assertRaisesRegex(ValueError, "unresolved prior cycle"):
+            select_prior_successful_run(pages, current_run_id=12, bootstrap=True)
+
+    def test_bootstrap_refused_when_success_is_only_on_later_page(self):
+        pages = [
+            {"workflow_runs": [run(i, i, conclusion="failure") for i in range(1, 101)]},
+            {"workflow_runs": [run(101, 101)]},
+        ]
+        with self.assertRaisesRegex(ValueError, "prior successful cycle"):
+            select_prior_successful_run(pages, current_run_id=102, bootstrap=True)
+
+    def test_malformed_history_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            select_prior_successful_run([{"unexpected": []}], current_run_id=102, bootstrap=True)
+
+    def test_bootstrap_only_allowed_when_no_prior_cycle_exists(self):
+        pages = [{"workflow_runs": []}]
+        self.assertIsNone(select_prior_successful_run(pages, current_run_id=2, bootstrap=True))
+        with self.assertRaisesRegex(ValueError, "No successful prior snapshot"):
+            select_prior_successful_run(pages, current_run_id=2, bootstrap=False)
+
+
+if __name__ == "__main__":
+    unittest.main()

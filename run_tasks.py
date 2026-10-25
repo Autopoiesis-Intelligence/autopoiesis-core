@@ -10,8 +10,21 @@ from pathlib import Path
 from typing import Any
 
 from autopoesis.core import EvolutionError, digest_state, evolve
-from autopoesis.task_queue import record_outcome_file, record_verification_file, update_queue_file
-from autopoesis.executor import apply_patch_to_sandbox, prepare_patch_artifact, verify_test_patch_in_sandbox
+from autopoesis.task_queue import (
+    advance_task_file,
+    current_attempt,
+    record_verification_file,
+    recover_expired_leases_file,
+    renew_lease_file,
+    select_next_task_file,
+    update_queue_file,
+)
+from autopoesis.executor import (
+    apply_patch_to_sandbox,
+    prepare_patch_artifact,
+    source_tree_digest,
+    verify_test_patch_in_sandbox,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -137,10 +150,40 @@ def execute_task(task: dict[str, Any], queue_path: Path) -> dict[str, Any]:
         note = task.get("note", "")
         if not isinstance(target_id, str) or not isinstance(status, str) or not isinstance(note, str):
             raise ValueError("update_task_status requires string task_id, status, and optional note")
-        result = record_outcome_file(queue_path, target_id, status, note)
+        # DONE is checked against the code as it is now, never a revision named by task data.
+        revision = source_tree_digest(ROOT / "autopoesis") if status == "DONE" else None
+        result = advance_task_file(
+            queue_path,
+            target_id,
+            status,
+            note,
+            owner=task.get("owner", f"run_tasks:{task_id}"),
+            token=task.get("lease_token"),
+            revision=revision,
+        )
+    elif task_type == "select_next_task":
+        owner = task.get("owner", f"run_tasks:{task_id}")
+        if not isinstance(owner, str) or not owner.strip():
+            raise ValueError("select_next_task owner must be a non-empty string")
+        result = select_next_task_file(queue_path, owner)
+    elif task_type == "renew_lease":
+        target_id = task.get("queue_task_id", task_id)
+        token = task.get("lease_token")
+        if not isinstance(target_id, str) or not target_id.strip():
+            raise ValueError("renew_lease queue_task_id must be a non-empty string")
+        if not isinstance(token, str) or not token.strip():
+            raise ValueError("renew_lease requires lease_token")
+        result = renew_lease_file(queue_path, target_id, token)
+    elif task_type == "recover_expired_leases":
+        result = recover_expired_leases_file(queue_path)
     elif task_type == "prepare_test_patch":
         result = prepare_patch_artifact(task, ROOT)
     elif task_type == "verify_test_patch_sandbox":
+        evidence_id = task.get("queue_task_id", task_id)
+        if not isinstance(evidence_id, str) or not evidence_id.strip():
+            raise ValueError("queue_task_id must be a non-empty string")
+        # Capture the attempt before running, so a result that returns after a retry is refused.
+        attempt = current_attempt(queue_path, evidence_id)
         result = verify_test_patch_in_sandbox(task, ROOT)
     elif task_type == "apply_test_patch_sandbox":
         artifact = prepare_patch_artifact(task, ROOT)
@@ -157,10 +200,14 @@ def execute_task(task: dict[str, Any], queue_path: Path) -> dict[str, Any]:
     if task_type == "verify_test_patch_sandbox" and result.get("verification_status") in {"PASS", "FAIL"}:
         record_verification_file(
             queue_path,
-            task_id,
+            evidence_id,
             result["verification_status"],
             "GENERATED_TEST_EXECUTION",
             result.get("artifact_sha256"),
+            task.get("source"),
+            attempt,
+            result.get("source_tree_sha256"),
+            task.get("lease_token"),
         )
 
     task_status = "FAIL" if result.get("verification_status") == "FAIL" else "PASS"
