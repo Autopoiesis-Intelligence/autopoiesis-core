@@ -17,8 +17,47 @@ def _positive_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def validate_emergency_stop_job_history(payload: Any) -> bool:
+    """Accept only job evidence proving the guard stopped execution before checkout."""
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("emergency-stop jobs history is incomplete or malformed")
+    jobs = []
+    for page in payload:
+        if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+            raise ValueError("emergency-stop jobs page is malformed")
+        jobs.extend(page["jobs"])
+    if len(jobs) != 1 or not isinstance(jobs[0], dict) or jobs[0].get("name") != "cycle":
+        raise ValueError("emergency-stop run must have exactly one cycle job")
+    job = jobs[0]
+    if job.get("status") != "completed" or job.get("conclusion") != "failure":
+        raise ValueError("emergency-stop cycle job did not complete with failure")
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("emergency-stop step history is missing")
+    names = [step.get("name") if isinstance(step, dict) else None for step in steps]
+    if any(not isinstance(name, str) for name in names) or len(names) != len(set(names)):
+        raise ValueError("emergency-stop step history is malformed or ambiguous")
+    guard_name = "Enforce emergency stop"
+    # The jobs API names an unnamed `uses:` step "Run <action>", e.g. "Run actions/checkout@v4".
+    checkout_name = "Run actions/checkout@v4"
+    if names.count(guard_name) != 1 or names.count(checkout_name) != 1:
+        raise ValueError("emergency-stop guard or checkout step is missing or duplicated")
+    guard_index = names.index(guard_name)
+    checkout_index = names.index(checkout_name)
+    if checkout_index <= guard_index:
+        raise ValueError("checkout appears before the emergency-stop guard")
+    if steps[guard_index].get("conclusion") != "failure":
+        raise ValueError("emergency-stop guard did not fail")
+    # The runner always appends "Complete job"; every workflow step after the guard must be skipped.
+    if names[-1] != "Complete job":
+        raise ValueError("emergency-stop step history does not end with the runner's Complete job step")
+    if any(step.get("conclusion") != "skipped" for step in steps[guard_index + 1:-1]):
+        raise ValueError("a step after the emergency-stop guard was not skipped")
+    return True
+
 def select_prior_successful_run(
-    pages: Any, *, current_run_id: int, bootstrap: bool
+    pages: Any, *, current_run_id: int, bootstrap: bool,
+    verified_disabled_run_ids: set[int] | None = None
 ) -> dict[str, Any] | None:
     """Select the newest successful main-branch cycle from all API pages.
 
@@ -60,14 +99,18 @@ def select_prior_successful_run(
         and run["head_branch"] == "main"
         and run["path"].split("@", 1)[0] == WORKFLOW_PATH
     ]
+    verified_disabled_run_ids = verified_disabled_run_ids or set()
     for run in cycle_runs:
-        if run["display_title"] == DISABLED_RUN_TITLE and (
-            run.get("conclusion") != "failure" or run["run_attempt"] != 1
-        ):
-            raise ValueError(
-                f"Emergency-stop run {run['id']} must have failed on its first attempt; "
-                f"got conclusion={run.get('conclusion')!r}, run_attempt={run['run_attempt']!r}"
-            )
+        if run["display_title"] == DISABLED_RUN_TITLE:
+            if run.get("conclusion") != "failure" or run["run_attempt"] != 1:
+                raise ValueError(
+                    f"Emergency-stop run {run['id']} must have failed on its first attempt; "
+                    f"got conclusion={run.get('conclusion')!r}, run_attempt={run['run_attempt']!r}"
+                )
+            if run["id"] not in verified_disabled_run_ids:
+                raise ValueError(
+                    f"Emergency-stop run {run['id']} lacks verified guard/step evidence"
+                )
     relevant = [
         run
         for run in cycle_runs
