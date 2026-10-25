@@ -177,7 +177,7 @@ def validate_restore_source_run(
     expected_id = _run_id_text(requested_run_id)
     if str(run.get("id", "")) != expected_id:
         raise ValueError("Source run ID does not match restore_run_id")
-    if run.get("run_attempt") != 1:
+    if type(run.get("run_attempt")) is not int or run.get("run_attempt") != 1:
         raise ValueError(
             "Source run must be the original attempt (run_attempt=1); "
             f"got {run.get('run_attempt')!r}"
@@ -308,7 +308,11 @@ def latest_source_run_id(
         ):
             title = run.get("display_title")
             if isinstance(title, str) and title.startswith(NEGATIVE_FAULT_TITLE_PREFIX):
-                if run.get("conclusion") != "failure" or run.get("run_attempt") != 1:
+                if (
+                    run.get("conclusion") != "failure"
+                    or type(run.get("run_attempt")) is not int
+                    or run.get("run_attempt") != 1
+                ):
                     raise ValueError(
                         f"Negative-fault run {run['id']} must have failed on its first attempt; "
                         f"got conclusion={run.get('conclusion')!r}, run_attempt={run.get('run_attempt')!r}"
@@ -323,7 +327,7 @@ def latest_source_run_id(
     # Fail closed on the newest relevant run rather than silently rolling back
     # to an older successful snapshot when the latest dispatch failed/cancelled.
     newest = max(candidates, key=lambda candidate: candidate["id"])
-    if newest.get("run_attempt") != 1:
+    if type(newest.get("run_attempt")) is not int or newest.get("run_attempt") != 1:
         raise ValueError(
             f"No successful workflow_dispatch snapshot run: newest workflow_dispatch "
             f"snapshot run {newest['id']} must have run_attempt=1; "
