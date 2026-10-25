@@ -208,5 +208,16 @@ class ScheduledStateSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_emergency_stop_job_history([{"jobs": []}])
 
+    def test_emergency_stop_rejects_any_authored_step_before_guard(self):
+        history = [{"jobs": [{"name": "cycle", "status": "completed", "conclusion": "failure", "steps": [
+            {"name": "Set up job", "conclusion": "success"},
+            {"name": "Run side effect before guard", "conclusion": "success"},
+            {"name": "Enforce emergency stop", "conclusion": "failure"},
+            {"name": "Run actions/checkout@v4", "conclusion": "skipped"},
+            {"name": "Complete job", "conclusion": "success"},
+        ]}]}]
+        with self.assertRaisesRegex(ValueError, "not the first workflow step"):
+            validate_emergency_stop_job_history(history)
+
 if __name__ == "__main__":
     unittest.main()
