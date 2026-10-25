@@ -5,19 +5,39 @@ It does not run a daemon, invoke arbitrary commands, or claim work it cannot ver
 """
 from __future__ import annotations
 
+import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
-from autopoesis.executor import source_tree_digest
 from autopoesis.task_queue import (
     advance_task_file,
+    current_attempt,
     load_queue,
+    record_verification_file,
     select_next_task_file,
 )
 from run_tasks import ROOT, execute_task
 
 SUPPORTED_CYCLE_TYPES = frozenset({"verify_test_patch_sandbox"})
 OWNER = "bounded-queue-cycle-v1"
+IGNORED_PARTS = {"__pycache__"}
+
+
+def source_tree_digest(root: Path) -> str:
+    """Hash a source tree deterministically without depending on file timestamps."""
+    digest = hashlib.sha256()
+    resolved_root = root.resolve()
+    for path in sorted(resolved_root.rglob("*")):
+        if not path.is_file() or any(part in IGNORED_PARTS for part in path.parts):
+            continue
+        relative = path.relative_to(resolved_root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
 
 
 def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
@@ -61,6 +81,8 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             owner=OWNER,
             token=token,
         )
+        attempt = current_attempt(queue_path, task_id)
+        revision_before = source_tree_digest(ROOT / "autopoesis")
         task = dict(item)
         task["queue_task_id"] = task_id
         task["lease_token"] = token
@@ -83,9 +105,8 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
                 "execution": execution,
             }
 
-        tested_revision = execution.get("result", {}).get("source_tree_sha256")
         current_revision = source_tree_digest(ROOT / "autopoesis")
-        if tested_revision != current_revision:
+        if revision_before != current_revision:
             advance_task_file(
                 queue_path,
                 task_id,
@@ -98,10 +119,22 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
                 "status": "RETRYABLE_FAILURE",
                 "task_id": task_id,
                 "reason": "verified source digest differs from current source tree",
-                "tested_revision": tested_revision,
+                "tested_revision": revision_before,
                 "current_revision": current_revision,
             }
 
+        # The base-branch verifier does not emit a source-tree digest. Bind a
+        # coordinator-level PASS to the before/after digest and exact attempt.
+        record_verification_file(
+            queue_path,
+            task_id,
+            "PASS",
+            "BOUNDED_SANDBOX_TEST_WITH_SOURCE_DIGEST",
+            source=item["source"],
+            attempt=attempt,
+            revision=current_revision,
+            token=token,
+        )
         advance_task_file(
             queue_path,
             task_id,
