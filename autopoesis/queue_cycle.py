@@ -13,6 +13,7 @@ from autopoesis.task_queue import (
     advance_task_file,
     current_attempt,
     load_queue,
+    MAX_ATTEMPTS,
     record_verification_file,
     select_next_task_file,
 )
@@ -20,9 +21,6 @@ from run_tasks import ROOT, execute_task
 
 SUPPORTED_CYCLE_TYPES = frozenset({"verify_test_patch_sandbox"})
 OWNER = "bounded-queue-cycle-v1"
-IGNORED_PARTS = {"__pycache__"}
-
-
 def source_tree_digest(root: Path) -> str:
     """Use the executor's digest format so tested and observed revisions are comparable."""
     return executor_source_tree_digest(root)
@@ -32,9 +30,9 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     """Select, execute, verify and finalize at most one supported queue task.
 
     Outcomes are COMPLETED, NO_WORK, RETRYABLE_FAILURE, or REJECTED.
-    A handler exception or FAIL verification returns IN_PROGRESS work to OPEN
-    when its lease remains valid. DONE is written only after the verifier's
-    PASS evidence is recorded and the tested source digest still matches.
+    A failed attempt returns work to OPEN until MAX_ATTEMPTS, then REJECTED.
+    DONE is written only after the verifier's PASS evidence is recorded and
+    the tested source digest still matches.
     """
     selection = select_next_task_file(
         queue_path,
@@ -78,36 +76,48 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
         verification = execution.get("result", {}).get("verification_status")
 
         if verification != "PASS":
+            terminal = attempt is not None and attempt >= MAX_ATTEMPTS
+            failure_status = "REJECTED" if terminal else "OPEN"
             advance_task_file(
                 queue_path,
                 task_id,
-                "OPEN",
-                f"bounded verifier did not PASS (result={verification!r}); retry required",
+                failure_status,
+                (
+                    f"bounded verifier did not PASS (result={verification!r}); "
+                    + ("attempt limit reached; task rejected" if terminal else "retry required")
+                ),
                 owner=OWNER,
                 token=token,
             )
             return {
-                "status": "RETRYABLE_FAILURE",
+                "status": "REJECTED" if terminal else "RETRYABLE_FAILURE",
                 "task_id": task_id,
                 "verification_status": verification,
+                "attempt": attempt,
                 "execution": execution,
             }
 
         current_revision = source_tree_digest(ROOT / "autopoesis")
         reported_revision = execution.get("result", {}).get("source_tree_sha256")
         if revision_before != current_revision or reported_revision != revision_before:
+            terminal = attempt is not None and attempt >= MAX_ATTEMPTS
+            failure_status = "REJECTED" if terminal else "OPEN"
             advance_task_file(
                 queue_path,
                 task_id,
-                "OPEN",
-                "tested source digest is missing or does not match the stable repository digest; retry required",
+                failure_status,
+                (
+                    "tested source digest is missing or does not match the stable repository digest; "
+                    + ("attempt limit reached; task rejected" if terminal else "retry required")
+                ),
                 owner=OWNER,
                 token=token,
             )
             return {
-                "status": "RETRYABLE_FAILURE",
+                "status": "REJECTED" if terminal else "RETRYABLE_FAILURE",
                 "task_id": task_id,
                 "reason": "executor-reported source digest is missing or mismatched, or source tree changed",
+                "attempt": attempt,
                 "tested_revision": reported_revision,
                 "revision_before": revision_before,
                 "current_revision": current_revision,
@@ -151,15 +161,23 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             latest = load_queue(queue_path)
             current = next((entry for entry in latest["items"] if entry.get("id") == task_id), None)
             if current is not None and current.get("status") in {"SELECTED", "IN_PROGRESS"}:
+                terminal = (
+                    current.get("status") == "IN_PROGRESS"
+                    and current.get("attempts", 0) >= MAX_ATTEMPTS
+                )
+                failure_status = "REJECTED" if terminal else "OPEN"
                 advance_task_file(
                     queue_path,
                     task_id,
-                    "OPEN",
-                    f"bounded cycle interrupted: {type(exc).__name__}",
+                    failure_status,
+                    (
+                        f"bounded cycle interrupted: {type(exc).__name__}; "
+                        + ("attempt limit reached; task rejected" if terminal else "retry required")
+                    ),
                     owner=OWNER,
                     token=token,
                 )
-                reopened = True
+                reopened = not terminal
         except Exception:
             pass
         return {
