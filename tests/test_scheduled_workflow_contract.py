@@ -56,7 +56,13 @@ class ScheduledWorkflowContractTests(unittest.TestCase):
         self.assertIn("gh api --paginate --slurp", self.source)
         self.assertIn("from autopoesis.scheduled_state import select_prior_successful_run", self.source)
         selector = (Path(__file__).resolve().parents[1] / "autopoesis" / "scheduled_state.py").read_text(encoding="utf-8")
-        self.assertIn('run.get("run_attempt", 1) == 1', selector)
+        self.assertIn("def _positive_integer(value: Any) -> bool:", selector)
+        self.assertIn('if not _positive_integer(run.get("run_attempt")):', selector)
+        self.assertIn('run["run_attempt"] == 1', selector)
+        self.assertIn('if not _positive_integer(run.get("id")):', selector)
+        self.assertIn('if not _positive_integer(run.get("run_number")):', selector)
+        self.assertIn('if not isinstance(run.get("head_branch"), str):', selector)
+        self.assertIn('if not isinstance(run.get("path"), str):', selector)
         self.assertIn("pages = json.loads(Path(\".cycle-runs-pages.json\").read_text())", self.source)
         self.assertIn("conclusion", self.source)
         self.assertIn("source_run_id", self.source)
@@ -78,6 +84,14 @@ class ScheduledWorkflowContractTests(unittest.TestCase):
         self.assertIn("name: autopoiesis-cycle-state", self.source)
         self.assertIn("retention-days: 90", self.source)
 
+    def test_emergency_stop_run_name_matches_the_selector_title(self):
+        from autopoesis.scheduled_state import DISABLED_RUN_TITLE
+
+        run_name = next(line for line in self.source.splitlines() if line.startswith("run-name: "))
+        self.assertIn(f"vars.AUTOPOIESIS_CYCLE_DISABLED == 'true' && '{DISABLED_RUN_TITLE}'", run_name)
+        guard = self.source.split("      - name: Enforce emergency stop", 1)[1].split("      - ", 1)[0]
+        self.assertIn("if: ${{ vars.AUTOPOIESIS_CYCLE_DISABLED == 'true' }}", guard)
+        self.assertIn("exit 1", guard)
 
 if __name__ == "__main__":
     unittest.main()
