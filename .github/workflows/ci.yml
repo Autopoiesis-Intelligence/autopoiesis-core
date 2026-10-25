@@ -3,7 +3,7 @@ run-name: "${{ github.event_name == 'workflow_dispatch' && inputs.restore_fault 
 
 on:
   push:
-    branches: [main]
+    branches: [main, integration/a13-reconciled-20261025]
   pull_request:
     branches: [main, feat/ci-restore-task-queue-artifact, integration/queue-restore-history-validation, claude/cl-020-a10-cycle, claude/cl-021-scheduled-cycle]
   workflow_dispatch:
