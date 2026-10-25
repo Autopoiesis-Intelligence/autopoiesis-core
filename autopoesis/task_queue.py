@@ -345,7 +345,11 @@ def merge_candidates(queue: dict[str, Any], candidates: list[dict[str, Any]]) ->
         merged = json.loads(canonical_json(queue))
     except (TypeError, ValueError) as exc:
         raise EvolutionError(f"Invalid queue data: {exc}") from exc
-    if not isinstance(merged, dict) or merged.get("version") != QUEUE_VERSION:
+    if (
+        not isinstance(merged, dict)
+        or type(merged.get("version")) is not int
+        or merged.get("version") != QUEUE_VERSION
+    ):
         raise EvolutionError("Unsupported task queue format")
     if not isinstance(merged.get("items"), list) or not isinstance(merged.get("history"), list):
         raise EvolutionError("Task queue must contain items and history arrays")

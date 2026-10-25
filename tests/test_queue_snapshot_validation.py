@@ -13,6 +13,7 @@ from autopoesis.queue_snapshot import (
     require_latest_source_run,
     validate_queue_snapshot,
     validate_restore_source_run,
+    merge_candidates,
 )
 from autopoesis.executor import source_tree_digest
 from autopoesis.task_queue import load_queue, record_verification_file, update_queue_file
@@ -52,6 +53,11 @@ class QueueSnapshotValidationTests(unittest.TestCase):
                     }), encoding="utf-8")
                     with self.assertRaises(EvolutionError):
                         load_queue(snapshot)
+
+    def test_merge_candidates_rejects_boolean_queue_version(self):
+        queue = {"version": True, "items": [], "history": []}
+        with self.assertRaisesRegex(EvolutionError, "Unsupported task queue format"):
+            merge_candidates(queue, [{"id": "CANDIDATE-1", "type": "proposal"}])
 
     def test_invalid_task_status_in_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
