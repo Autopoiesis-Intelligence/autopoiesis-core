@@ -306,14 +306,6 @@ def latest_source_run_id(
             and run.get("head_branch") == current_branch
             and workflow_path == expected_workflow_path
         ):
-            title = run.get("display_title")
-            if isinstance(title, str) and title.startswith(NEGATIVE_FAULT_TITLE_PREFIX):
-                if run.get("conclusion") != "failure" or run.get("run_attempt") != 1:
-                    raise ValueError(
-                        f"Negative-fault run {run['id']} must have failed on its first attempt; "
-                        f"got conclusion={run.get('conclusion')!r}, run_attempt={run.get('run_attempt')!r}"
-                    )
-                continue
             candidates.append(run)
     if not candidates:
         raise ValueError(
@@ -323,6 +315,12 @@ def latest_source_run_id(
     # Fail closed on the newest relevant run rather than silently rolling back
     # to an older successful snapshot when the latest dispatch failed/cancelled.
     newest = max(candidates, key=lambda candidate: candidate["id"])
+    title = newest.get("display_title")
+    if isinstance(title, str) and title.startswith(NEGATIVE_FAULT_TITLE_PREFIX):
+        raise ValueError(
+            f"Newest workflow_dispatch run {newest['id']} is a negative restore fault run; "
+            "create a fresh successful seed snapshot before restoring"
+        )
     if newest.get("run_attempt") != 1:
         raise ValueError(
             f"No successful workflow_dispatch snapshot run: newest workflow_dispatch "
