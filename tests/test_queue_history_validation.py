@@ -1,5 +1,6 @@
 """Validation tests for persisted task queue history."""
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -8,9 +9,9 @@ from unittest.mock import patch
 
 from autopoesis.core import EvolutionError
 from autopoesis.task_queue import (
+    advance_task,
+    advance_task_file,
     load_queue,
-    record_outcome,
-    record_outcome_file,
     record_verification_file,
     update_queue_file,
 )
@@ -104,10 +105,10 @@ class QueueHistoryValidationTests(unittest.TestCase):
             "history": [],
         }
         with self.assertRaisesRegex(EvolutionError, "note must be a string"):
-            record_outcome(queue, "TASK-1", "DONE", ["not a note"])
+            advance_task(queue, "TASK-1", "SELECTED", ["not a note"], owner="unit-test")
         queue["items"][0]["attempts"] = -1
         with self.assertRaisesRegex(EvolutionError, "attempts count"):
-            record_outcome(queue, "TASK-1", "IN_PROGRESS")
+            advance_task(queue, "TASK-1", "SELECTED", owner="unit-test")
 
     def test_rejects_invalid_status_transition_history(self):
         with self.assertRaisesRegex(EvolutionError, "destination status"):
@@ -127,7 +128,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
                     "event": "STATUS_CHANGED",
                     "task_id": "TASK-1",
                     "from": "OPEN",
-                    "to": "DONE",
+                    "to": "SELECTED",
                     "note": "first transition",
                     "at": "2026-01-01T00:00:00+00:00",
                 },
@@ -135,7 +136,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
                     "event": "STATUS_CHANGED",
                     "task_id": "TASK-1",
                     "from": "OPEN",
-                    "to": "DONE",
+                    "to": "SELECTED",
                     "note": "invalid second transition starts from old state",
                     "at": "2026-01-01T00:00:01+00:00",
                 },
@@ -147,10 +148,115 @@ class QueueHistoryValidationTests(unittest.TestCase):
                 "event": "STATUS_CHANGED",
                 "task_id": "TASK-1",
                 "from": "OPEN",
-                "to": "OPEN",
-                "note": "history claims OPEN",
+                "to": "SELECTED",
+                "note": "history claims SELECTED",
                 "at": "2026-01-01T00:00:00+00:00",
             }]))
+
+    def test_rejects_history_edges_outside_the_transition_table(self):
+        for start, end in (("OPEN", "DONE"), ("DONE", "OPEN"), ("REJECTED", "SELECTED"), ("OPEN", "OPEN")):
+            with self.subTest(edge=f"{start}->{end}"):
+                with self.assertRaisesRegex(EvolutionError, "illegal transition"):
+                    load_queue(self._write_queue([{
+                        "event": "STATUS_CHANGED", "task_id": "TASK-1", "from": start, "to": end,
+                        "note": "forged", "at": "2026-01-01T00:00:00+00:00",
+                    }]))
+
+    def test_rejects_history_completion_without_a_bound_pass(self):
+        def edge(start, end, second):
+            event = {"event": "STATUS_CHANGED", "task_id": "TASK-1", "from": start, "to": end,
+                     "note": "", "at": f"2026-01-01T00:00:0{second}+00:00"}
+            if end == "SELECTED":
+                event["lease_sha256"] = hashlib.sha256(b"b" * 32).hexdigest()
+            return event
+
+        def verification(status, attempt, source="tests/example.py", revision="a" * 64, lease_token="b" * 32):
+            event = {"event": "VERIFICATION_RECORDED", "task_id": "TASK-1", "verification_status": status,
+                     "verification_level": "unit", "artifact_sha256": None, "source": source,
+                     "attempt": attempt, "at": "2026-01-01T00:00:03+00:00"}
+            if revision is not None:
+                event["revision"] = revision
+            if lease_token is not None:
+                event["lease_sha256"] = hashlib.sha256(lease_token.encode()).hexdigest()
+            return event
+
+        def write(events):
+            path = self._write_queue(events)
+            queue = json.loads(path.read_text(encoding="utf-8"))
+            attempts = sum(1 for e in events if e["event"] == "STATUS_CHANGED" and e["to"] == "IN_PROGRESS")
+            queue["items"][0].update({"source": "tests/example.py", "attempts": attempts})
+            path.write_text(json.dumps(queue), encoding="utf-8")
+            return path
+
+        walk = [edge("OPEN", "SELECTED", 1), edge("SELECTED", "IN_PROGRESS", 2)]
+        cases = {
+            "no evidence": walk,
+            "FAIL": walk + [verification("FAIL", 1)],
+            "other source": walk + [verification("PASS", 1, source="other.py")],
+            "no revision": walk + [verification("PASS", 1, revision=None)],
+            "other lease": walk + [verification("PASS", 1, lease_token="c" * 32)],
+            "no lease token": walk + [verification("PASS", 1, lease_token=None)],
+            "earlier attempt": walk + [verification("PASS", 1), edge("IN_PROGRESS", "OPEN", 3),
+                                       edge("OPEN", "SELECTED", 3), edge("SELECTED", "IN_PROGRESS", 3)],
+        }
+        for label, events in cases.items():
+            with self.subTest(label):
+                with self.assertRaisesRegex(EvolutionError, "without a PASS"):
+                    load_queue(write(events + [edge("IN_PROGRESS", "DONE", 4)]))
+        path = write(walk + [verification("PASS", 1), edge("IN_PROGRESS", "DONE", 4)])
+        self.assertEqual(load_queue(path)["items"][0]["status"], "DONE")
+
+        # Persisted history must not change verification state after a terminal transition.
+        post_done_failure = verification("FAIL", 1)
+        post_done_failure["at"] = "2026-01-01T00:00:05+00:00"
+        path = write(walk + [
+            verification("PASS", 1),
+            edge("IN_PROGRESS", "DONE", 4),
+            post_done_failure,
+        ])
+        with self.assertRaisesRegex(EvolutionError, "outside IN_PROGRESS"):
+            load_queue(path)
+        # Evidence recorded before the attempt started cannot count either.
+        path = write([edge("OPEN", "SELECTED", 1), verification("PASS", 1), edge("SELECTED", "IN_PROGRESS", 2)])
+        with self.assertRaisesRegex(EvolutionError, "outside IN_PROGRESS"):
+            load_queue(path)
+
+    def test_rejects_attempt_counter_that_contradicts_history(self):
+        events = []
+        for cycle in range(3):
+            for start, end in (("OPEN", "SELECTED"), ("SELECTED", "IN_PROGRESS"), ("IN_PROGRESS", "OPEN")):
+                events.append({"event": "STATUS_CHANGED", "task_id": "TASK-1", "from": start, "to": end,
+                               "note": "", "at": f"2026-01-01T00:00:0{cycle}+00:00"})
+        path = self._write_queue(events)
+        queue = json.loads(path.read_text(encoding="utf-8"))
+        for attempts in (0, 1, 2):
+            with self.subTest(attempts=attempts):
+                queue["items"][0].update({"status": "OPEN", "attempts": attempts})
+                path.write_text(json.dumps(queue), encoding="utf-8")
+                with self.assertRaisesRegex(EvolutionError, "attempts/history mismatch"):
+                    load_queue(path)
+        queue["items"][0]["attempts"] = 3
+        path.write_text(json.dumps(queue), encoding="utf-8")
+        self.assertEqual(load_queue(path)["items"][0]["attempts"], 3)
+
+    def test_rejects_attempts_beyond_the_limit(self):
+        # advance_task never starts a fourth attempt, so a restored queue that claims one is forged.
+        path = self._write_queue([])
+        queue = json.loads(path.read_text(encoding="utf-8"))
+        queue["items"][0].update({"status": "OPEN", "attempts": 4})
+        path.write_text(json.dumps(queue), encoding="utf-8")
+        with self.assertRaisesRegex(EvolutionError, "attempt limit"):
+            load_queue(path)
+        events = []
+        for cycle in range(4):
+            for start, end in (("OPEN", "SELECTED"), ("SELECTED", "IN_PROGRESS"), ("IN_PROGRESS", "OPEN")):
+                events.append({"event": "STATUS_CHANGED", "task_id": "TASK-1", "from": start, "to": end,
+                               "note": "", "at": f"2026-01-01T00:00:0{cycle}+00:00"})
+        queue["history"] = events
+        queue["items"][0]["attempts"] = 3
+        path.write_text(json.dumps(queue), encoding="utf-8")
+        with self.assertRaisesRegex(EvolutionError, "beyond the attempt limit"):
+            load_queue(path)
 
     def test_rejects_non_string_transition_note(self):
         with self.assertRaisesRegex(EvolutionError, "note must be a string"):
@@ -219,7 +325,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(EvolutionError, "Unsupported verification status"):
                 record_verification_file(path, "CORE-007", ["PASS"], "GENERATED_TEST_EXECUTION")
             with self.assertRaisesRegex(EvolutionError, "Unsupported queue status"):
-                record_outcome_file(path, "TASK-1", ["DONE"], "invalid status type")
+                advance_task_file(path, "TASK-1", ["DONE"], "invalid status type")
 
     def test_accepts_history_written_by_queue_helpers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -229,7 +335,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
                 "type": "proposal",
                 "description": "test",
             }])
-            record_outcome_file(path, "TASK-1", "DONE", "test transition")
+            advance_task_file(path, "TASK-1", "SELECTED", "test transition", owner="unit-test")
             queue = load_queue(path)
             self.assertEqual([event["event"] for event in queue["history"]], [
                 "CANDIDATE_ADDED",
@@ -244,7 +350,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
 
             with patch("autopoesis.task_queue.os.replace", side_effect=OSError("disk error")):
                 with self.assertRaisesRegex(OSError, "disk error"):
-                    record_outcome_file(path, "TASK-1", "DONE", "must not partially persist")
+                    advance_task_file(path, "TASK-1", "SELECTED", "must not partially persist", owner="unit-test")
 
             self.assertEqual(path.read_bytes(), original_bytes)
             self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
