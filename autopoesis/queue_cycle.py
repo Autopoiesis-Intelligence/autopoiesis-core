@@ -155,35 +155,51 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             "execution": execution,
         }
     except Exception as exc:
-        # Never manufacture DONE on an exception. Reopen only if the current
-        # lease still authorizes the transition; otherwise leave recovery to
-        # the governed expired-lease path.
+        # Never manufacture DONE or REJECTED from an attempted transition.
+        # If the lease prevents recovery, report that the persisted state needs
+        # inspection instead of claiming a transition that may not have occurred.
+        outcome = "RECOVERY_REQUIRED"
         reopened = False
         try:
             latest = load_queue(queue_path)
             current = next((entry for entry in latest["items"] if entry.get("id") == task_id), None)
-            if current is not None and current.get("status") in {"SELECTED", "IN_PROGRESS"}:
-                terminal = (
-                    current.get("status") == "IN_PROGRESS"
-                    and current.get("attempts", 0) >= MAX_ATTEMPTS
-                )
-                failure_status = "REJECTED" if terminal else "OPEN"
-                advance_task_file(
-                    queue_path,
-                    task_id,
-                    failure_status,
-                    (
-                        f"bounded cycle interrupted: {type(exc).__name__}; "
-                        + ("attempt limit reached; task rejected" if terminal else "retry required")
-                    ),
-                    owner=OWNER,
-                    token=token,
-                )
-                reopened = not terminal
+            if current is not None:
+                current_status = current.get("status")
+                if current_status == "OPEN":
+                    outcome = "RETRYABLE_FAILURE"
+                    reopened = True
+                elif current_status == "REJECTED":
+                    outcome = "REJECTED"
+                elif current_status in {"SELECTED", "IN_PROGRESS"}:
+                    terminal = (
+                        current_status == "IN_PROGRESS"
+                        and current.get("attempts", 0) >= MAX_ATTEMPTS
+                    )
+                    failure_status = "REJECTED" if terminal else "OPEN"
+                    advance_task_file(
+                        queue_path,
+                        task_id,
+                        failure_status,
+                        (
+                            f"bounded cycle interrupted: {type(exc).__name__}; "
+                            + ("attempt limit reached; task rejected" if terminal else "retry required")
+                        ),
+                        owner=OWNER,
+                        token=token,
+                    )
+                    verified = load_queue(queue_path)
+                    persisted = next(
+                        (entry for entry in verified["items"] if entry.get("id") == task_id),
+                        None,
+                    )
+                    if persisted is not None and persisted.get("status") == failure_status:
+                        outcome = "REJECTED" if terminal else "RETRYABLE_FAILURE"
+                        reopened = not terminal
         except Exception:
-            pass
+            # The queue/lease prevented a verified recovery transition.
+            outcome = "RECOVERY_REQUIRED"
         return {
-            "status": "RETRYABLE_FAILURE" if reopened else "REJECTED",
+            "status": outcome,
             "task_id": task_id,
             "reason": f"{type(exc).__name__}: {exc}",
             "reopened": reopened,
