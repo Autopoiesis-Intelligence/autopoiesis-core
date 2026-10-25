@@ -252,6 +252,8 @@ jobs:
               snapshot,
               restored,
               expected_queue=validation["queue"],
+              expected_sha256=validation["task_queue_sha256"],
+              expected_size_bytes=validation["task_queue_size_bytes"],
           )
           restored_queue = load_queue(restored)
           if restored_queue != validation["queue"]:
