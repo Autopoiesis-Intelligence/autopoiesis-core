@@ -184,6 +184,8 @@ def _validate_history(history: list[Any]) -> None:
             if "lease_sha256" in event and not _is_digest(event["lease_sha256"]):
                 raise EvolutionError(f"{prefix}: lease_sha256 must be a lowercase SHA-256 hex digest")
         if event_type == "VERIFICATION_RECORDED":
+            if "attempt" in event and (type(event["attempt"]) is not int or event["attempt"] < 1):
+                raise EvolutionError(f"{prefix}: attempt must be a positive integer")
             verification_status = event.get("verification_status")
             if not isinstance(verification_status, str) or verification_status not in {"PASS", "FAIL"}:
                 raise EvolutionError(f"{prefix}: invalid verification status")

@@ -59,6 +59,25 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(EvolutionError, "Unsupported task queue format"):
             merge_candidates(queue, [{"id": "CANDIDATE-1", "type": "proposal"}])
 
+    def test_verification_history_rejects_boolean_attempt(self):
+        queue = {
+            "version": 1,
+            "items": [],
+            "history": [{
+                "event": "VERIFICATION_RECORDED",
+                "task_id": "TASK-1",
+                "at": "2026-10-25T00:00:00+00:00",
+                "verification_status": "PASS",
+                "verification_level": "UNIT_TEST",
+                "attempt": True,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "TASK_QUEUE.json"
+            snapshot.write_text(json.dumps(queue), encoding="utf-8")
+            with self.assertRaisesRegex(EvolutionError, "attempt must be a positive integer"):
+                load_queue(snapshot)
+
     def test_invalid_task_status_in_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / "TASK_QUEUE.json"
