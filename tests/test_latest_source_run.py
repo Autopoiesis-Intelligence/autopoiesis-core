@@ -66,9 +66,22 @@ class LatestSourceRunTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "newest workflow_dispatch snapshot run 12"):
             latest_source_run_id(runs, current_run_id=13, current_branch=BRANCH)
         # A fault run that did not fail, or was re-run, is refused instead of being skipped.
-        for bad in (run(11, conclusion="success", title=fault), run(11, conclusion="failure", title=fault, attempt=2)):
+        for bad in (
+            run(11, conclusion="success", title=fault),
+            run(11, conclusion="failure", title=fault, attempt=2),
+            run(11, conclusion="failure", title=fault, attempt=True),
+        ):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "Negative-fault run 11"):
                 latest_source_run_id(payload(run(10), bad), current_run_id=12, current_branch=BRANCH)
+
+    def test_rejects_non_integer_attempt_values(self):
+        for attempt in (True, False, 1.0, "1", None):
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(ValueError, "run_attempt=1"):
+                latest_source_run_id(
+                    payload(run(10), run(30, attempt=attempt)),
+                    current_run_id=40,
+                    current_branch=BRANCH,
+                )
 
     def test_refuses_to_fall_back_when_newest_relevant_run_was_rerun(self):
         runs = payload(
