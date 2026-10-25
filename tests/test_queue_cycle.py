@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autopoesis.executor import source_tree_digest
 from autopoesis.queue_cycle import run_one_queue_cycle
 from autopoesis.task_queue import (
     current_attempt,
@@ -37,7 +36,7 @@ class BoundedQueueCycleTests(unittest.TestCase):
 
     def _fixture_handler(self, task, queue_path, verification_status="PASS"):
         task_id = task["queue_task_id"]
-        revision = source_tree_digest(queue_cycle.ROOT / "autopoesis")
+        revision = queue_cycle.source_tree_digest(queue_cycle.ROOT / "autopoesis")
         record_verification_file(
             queue_path,
             task_id,
