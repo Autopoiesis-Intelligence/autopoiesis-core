@@ -196,10 +196,8 @@ class BoundedQueueCycleTests(unittest.TestCase):
         before = self.queue_path.read_bytes()
         result = run_one_queue_cycle(self.queue_path)
         self.assertEqual(result["status"], "NO_WORK")
-        self.assertTrue(any(
-            item.get("id") == "CYCLE-001" and item.get("reason") == "attempt limit reached"
-            for item in result["deferred"]
-        ))
+        # REJECTED is terminal: selection skips it instead of deferring it as waiting work.
+        self.assertNotIn("CYCLE-001", [item.get("id") for item in result["deferred"]])
         self.assertEqual(self.queue_path.read_bytes(), before)
 
     def test_mismatched_executor_digest_reopens_task_without_done(self):
