@@ -70,6 +70,15 @@ class LatestSourceRunTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "Negative-fault run 11"):
                 latest_source_run_id(payload(run(10), bad), current_run_id=12, current_branch=BRANCH)
 
+    def test_rejects_non_integer_attempt_values(self):
+        for attempt in (True, False, 1.0, "1", None):
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(ValueError, "run_attempt=1"):
+                latest_source_run_id(
+                    payload(run(10), run(30, attempt=attempt)),
+                    current_run_id=40,
+                    current_branch=BRANCH,
+                )
+
     def test_refuses_to_fall_back_when_newest_relevant_run_was_rerun(self):
         runs = payload(
             run(10, conclusion="success", attempt=1),
