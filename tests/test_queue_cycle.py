@@ -116,6 +116,27 @@ class BoundedQueueCycleTests(unittest.TestCase):
             for event in queue["history"]
         ))
 
+    def test_missing_executor_digest_reopens_task_without_done(self):
+        def handler_without_digest(task, path):
+            result = self._fixture_handler(task, path, "PASS")
+            result["result"].pop("source_tree_sha256", None)
+            return result
+
+        with mock.patch.object(queue_cycle, "execute_task", side_effect=handler_without_digest):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertEqual(result["status"], "RETRYABLE_FAILURE")
+        self.assertIn("missing or mismatched", result["reason"])
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "OPEN")
+        self.assertFalse(any(
+            event.get("event") == "STATUS_CHANGED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("to") == "DONE"
+            for event in queue["history"]
+        ))
+
     def test_no_supported_work_does_not_mutate_queue(self):
         unsupported_path = Path(self.temp.name) / "unsupported.json"
         update_queue_file(
