@@ -7,7 +7,8 @@ from pathlib import Path
 
 from autopoesis.core import EvolutionError, digest_state, evolve
 from run_tasks import discover_tasks, execute_task
-from autopoesis.task_queue import load_queue, record_outcome, record_outcome_file, update_queue_file
+from autopoesis.task_queue import load_queue, update_queue_file
+from lease_helpers import step, step_file
 from autopoesis.executor import apply_patch_to_sandbox, prepare_patch_artifact, validate_patch_artifact, verify_test_patch_in_sandbox
 
 
@@ -93,7 +94,7 @@ class EvolutionCoreTests(unittest.TestCase):
             self.assertEqual(first["added"], 1)
             self.assertEqual(first["total"], 1)
             queue = load_queue(path)
-            queue = record_outcome(queue, "DISC-123", "SELECTED", "highest-value candidate")
+            queue = step(queue, "DISC-123", "SELECTED", note="highest-value candidate")
             path.write_text(json.dumps(queue), encoding="utf-8")
 
             second = update_queue_file(path, [candidate])
@@ -116,7 +117,7 @@ class EvolutionCoreTests(unittest.TestCase):
             }
 
             update_queue_file(original_path, [candidate])
-            record_outcome_file(original_path, candidate["id"], "IN_PROGRESS", "first run")
+            step_file(original_path, candidate["id"], "SELECTED", "IN_PROGRESS", note="first run")
             original = load_queue(original_path)
             original_bytes = original_path.read_bytes()
 
@@ -160,7 +161,7 @@ class EvolutionCoreTests(unittest.TestCase):
                 "description": "Add focused tests.",
             }
             update_queue_file(path, [candidate])
-            outcome = record_outcome_file(path, "DISC-456", "IN_PROGRESS", "begin bounded work")
+            outcome = step_file(path, "DISC-456", "SELECTED", "IN_PROGRESS", note="begin bounded work")
             self.assertEqual(outcome["status"], "IN_PROGRESS")
             queue = load_queue(path)
             self.assertEqual(queue["items"][0]["attempts"], 1)
