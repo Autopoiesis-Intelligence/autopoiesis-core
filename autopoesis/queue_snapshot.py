@@ -118,6 +118,8 @@ def install_validated_queue_snapshot(
     destination_path: Path,
     *,
     expected_queue: dict[str, Any],
+    expected_sha256: str,
+    expected_size_bytes: int,
 ) -> dict[str, Any]:
     """Atomically install a previously validated queue snapshot.
 
@@ -127,6 +129,10 @@ def install_validated_queue_snapshot(
     """
     if not snapshot_path.is_file():
         raise ValueError("Queue snapshot file is missing")
+    if not isinstance(expected_sha256, str) or not _SHA256.fullmatch(expected_sha256):
+        raise ValueError("Expected staged queue SHA-256 must be a 64-character lowercase hexadecimal digest")
+    if type(expected_size_bytes) is not int or expected_size_bytes < 0:
+        raise ValueError("Expected staged queue size must be a non-negative integer")
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     staged_path: Path | None = None
     try:
@@ -142,6 +148,13 @@ def install_validated_queue_snapshot(
                     staged.write(chunk)
             staged.flush()
             os.fsync(staged.fileno())
+
+        staged_bytes = staged_path.read_bytes()
+        staged_digest = hashlib.sha256(staged_bytes).hexdigest()
+        if staged_digest != expected_sha256:
+            raise ValueError("Staged queue SHA-256 differs from validated source snapshot")
+        if len(staged_bytes) != expected_size_bytes:
+            raise ValueError("Staged queue size differs from validated source snapshot")
 
         staged_queue = load_queue(staged_path)
         if staged_queue != expected_queue:
