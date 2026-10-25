@@ -2,7 +2,11 @@
 
 import unittest
 
-from autopoesis.scheduled_state import (\n    DISABLED_RUN_TITLE,\n    select_prior_successful_run,\n    validate_emergency_stop_job_history,\n)
+from autopoesis.scheduled_state import (
+    DISABLED_RUN_TITLE,
+    select_prior_successful_run,
+    validate_emergency_stop_job_history,
+ )
 
 
 WORKFLOW = ".github/workflows/autopoiesis-cycle.yml"
