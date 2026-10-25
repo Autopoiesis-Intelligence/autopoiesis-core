@@ -289,6 +289,7 @@ def load_queue(path: Path) -> dict[str, Any]:
             bound = (
                 event.get("source") is not None
                 and event.get("source") == sources.get(task_id)
+                and type(event.get("attempt")) is int
                 and event.get("attempt") == replayed_attempts.get(task_id)
                 and _is_digest(event.get("revision"))
                 and _is_digest(event.get("lease_sha256"))
@@ -444,6 +445,7 @@ def _has_passing_verification(queue: dict[str, Any], item: dict[str, Any], revis
         elif event.get("event") == "VERIFICATION_RECORDED":
             bound = (
                 event.get("source") == source
+                and type(event.get("attempt")) is int
                 and event.get("attempt") == item.get("attempts")
                 and token is not None
                 and event.get("lease_sha256") == _lease_fingerprint(token)
