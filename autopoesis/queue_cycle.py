@@ -5,8 +5,7 @@ It does not run a daemon, invoke arbitrary commands, or claim work it cannot ver
 """
 from __future__ import annotations
 
-import hashlib
-import os
+from autopoesis.executor import source_tree_digest as executor_source_tree_digest
 from pathlib import Path
 from typing import Any
 
@@ -25,19 +24,8 @@ IGNORED_PARTS = {"__pycache__"}
 
 
 def source_tree_digest(root: Path) -> str:
-    """Hash a source tree deterministically without depending on file timestamps."""
-    digest = hashlib.sha256()
-    resolved_root = root.resolve()
-    for path in sorted(resolved_root.rglob("*")):
-        if not path.is_file() or any(part in IGNORED_PARTS for part in path.parts):
-            continue
-        relative = path.relative_to(resolved_root).as_posix().encode("utf-8")
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        content = path.read_bytes()
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
+    """Use the executor's digest format so tested and observed revisions are comparable."""
+    return executor_source_tree_digest(root)
 
 
 def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
@@ -106,25 +94,28 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             }
 
         current_revision = source_tree_digest(ROOT / "autopoesis")
-        if revision_before != current_revision:
+        reported_revision = execution.get("result", {}).get("source_tree_sha256")
+        if revision_before != current_revision or reported_revision != revision_before:
             advance_task_file(
                 queue_path,
                 task_id,
                 "OPEN",
-                "source tree changed after verification; result cannot complete task",
+                "tested source digest is missing or does not match the stable repository digest; retry required",
                 owner=OWNER,
                 token=token,
             )
             return {
                 "status": "RETRYABLE_FAILURE",
                 "task_id": task_id,
-                "reason": "verified source digest differs from current source tree",
-                "tested_revision": revision_before,
+                "reason": "executor-reported source digest is missing or mismatched, or source tree changed",
+                "tested_revision": reported_revision,
+                "revision_before": revision_before,
                 "current_revision": current_revision,
             }
 
-        # The base-branch verifier does not emit a source-tree digest. Bind a
-        # coordinator-level PASS to the before/after digest and exact attempt.
+        # The executor already records its own lease-bound verification.
+        # This additional PASS binds the coordinator's finalization to the same
+        # tested revision and attempt; it is written only after exact digest equality.
         record_verification_file(
             queue_path,
             task_id,
