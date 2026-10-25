@@ -95,6 +95,27 @@ class BoundedQueueCycleTests(unittest.TestCase):
             for event in queue["history"]
         ))
 
+    def test_failed_recovery_transition_reports_recovery_required(self):
+        original_advance = queue_cycle.advance_task_file
+
+        def fail_reopen(path, task_id, status, *args, **kwargs):
+            if status == "OPEN":
+                raise RuntimeError("simulated lease rejection")
+            return original_advance(path, task_id, status, *args, **kwargs)
+
+        with (
+            mock.patch.object(queue_cycle, "execute_task", side_effect=RuntimeError("executor failed")),
+            mock.patch.object(queue_cycle, "advance_task_file", side_effect=fail_reopen),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
+        self.assertFalse(result["reopened"])
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "IN_PROGRESS")
+        self.assertNotEqual(result["status"], "REJECTED")
+
     def test_repeated_failures_reject_after_max_attempts(self):
         expected = ["RETRYABLE_FAILURE", "RETRYABLE_FAILURE", "REJECTED"]
         for expected_status in expected:
