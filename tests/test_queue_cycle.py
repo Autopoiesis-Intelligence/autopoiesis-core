@@ -411,6 +411,35 @@ class BoundedQueueCycleTests(unittest.TestCase):
         self.assertNotIn("CYCLE-001", [entry.get("id") for entry in result["deferred"]])
 
 
+    def test_rejection_by_recovery_is_reported_when_another_task_then_runs(self):
+        for _ in range(2):
+            with mock.patch.object(
+                queue_cycle, "execute_task",
+                side_effect=lambda task, path: self._fixture_handler(task, path, "FAIL"),
+            ):
+                run_one_queue_cycle(self.queue_path)
+        crashed_at = datetime.now(timezone.utc) - timedelta(days=2)
+        selection = select_next_task_file(self.queue_path, queue_cycle.OWNER, now=crashed_at)
+        advance_task_file(
+            self.queue_path, "CYCLE-001", "IN_PROGRESS", "third cycle that later crashed",
+            owner=queue_cycle.OWNER, token=selection["lease"]["token"], now=crashed_at,
+        )
+        update_queue_file(self.queue_path, [{
+            "id": "CYCLE-002",
+            "type": "verify_test_patch_sandbox",
+            "source": "autopoesis/task_queue.py",
+            "evidence": "unit-test fixture for bounded coordinator",
+            "description": "Second task selected after recovery.",
+        }])
+        with mock.patch.object(
+            queue_cycle, "execute_task",
+            side_effect=lambda task, path: self._fixture_handler(task, path, "PASS"),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["task_id"], "CYCLE-002")
+        self.assertEqual(result["rejected_after_recovery"], ["CYCLE-001"])
+
     def test_command_line_runs_one_cycle_and_maps_the_outcome_to_an_exit_code(self):
         import io
         import json

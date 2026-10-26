@@ -42,13 +42,21 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     DONE is written only after the verifier's PASS evidence is recorded and
     the tested source digest still matches.
     """
+    # Recovery runs before selection, so its rejections belong in every outcome,
+    # not only NO_WORK; the list fills in place and survives a later failure.
+    rejected_after_recovery: list[str] = []
+    result = _run_cycle(queue_path, rejected_after_recovery)
+    result["rejected_after_recovery"] = rejected_after_recovery
+    return result
+
+
+def _run_cycle(queue_path: Path, rejected_after_recovery: list[str]) -> dict[str, Any]:
     try:
         # A cycle that died mid-task (runner timeout, OOM) leaves its lease behind;
         # without this, every later cycle would report "work already active" forever.
         recovered = recover_expired_leases_file(queue_path)["recovered"]
         # Recovery returns work to OPEN; a task that already used every attempt would then
         # only be deferred forever, so it ends REJECTED here instead.
-        rejected_after_recovery = []
         if recovered:
             items = {entry.get("id"): entry for entry in load_queue(queue_path)["items"]}
             for recovered_id in recovered:
@@ -81,7 +89,6 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             "status": "NO_WORK",
             "reason": selection.get("reason", "no eligible task"),
             "deferred": selection.get("deferred", []),
-            "rejected_after_recovery": rejected_after_recovery,
         }
 
     try:
