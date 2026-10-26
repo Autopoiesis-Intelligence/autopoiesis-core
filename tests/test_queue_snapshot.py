@@ -2,8 +2,10 @@
 
 import hashlib
 import json
+import stat
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from autopoesis.queue_snapshot import (
     install_validated_queue_snapshot,
     validate_queue_snapshot,
     validate_restore_source_run,
+    verify_and_extract_artifact_archive,
 )
 
 
@@ -335,6 +338,83 @@ class QueueSnapshotTests(unittest.TestCase):
                         self.valid_provenance(), {"artifacts": [changed]},
                         requested_run_id=RUN_ID,
                     )
+
+
+    def make_archive(self, path, entries):
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data in entries:
+                archive.writestr(name, data)
+        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def test_archive_digest_is_checked_before_extraction(self):
+        archive = self.root / "artifact.zip"
+        digest = self.make_archive(archive, [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+        ])
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "does not match source metadata"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest="sha256:" + "0" * 64
+            )
+        self.assertFalse(destination.exists())
+
+        result = verify_and_extract_artifact_archive(
+            archive, destination, expected_digest=digest
+        )
+        self.assertEqual(result["archive_sha256"], digest)
+        self.assertEqual(result["extracted_file_count"], 2)
+        self.assertTrue((destination / "TASK_QUEUE.json").is_file())
+        self.assertTrue((destination / "QUEUE_SNAPSHOT_MANIFEST.json").is_file())
+
+    def test_archive_rejects_path_traversal_and_cleans_partial_output(self):
+        archive = self.root / "unsafe.zip"
+        digest = self.make_archive(archive, [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+            ("../escaped.txt", b"outside"),
+        ])
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "Unsafe path"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
+        self.assertFalse((self.root.parent / "escaped.txt").exists())
+
+    def test_archive_rejects_symlink_entries(self):
+        archive = self.root / "symlink.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("TASK_QUEUE.json", b"{}")
+            bundle.writestr("QUEUE_SNAPSHOT_MANIFEST.json", b"{}")
+            link = zipfile.ZipInfo("link")
+            link.create_system = 3
+            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+            bundle.writestr(link, "TASK_QUEUE.json")
+        digest = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "Symlink"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
+
+    def test_archive_rejects_invalid_digest_and_existing_destination(self):
+        archive = self.root / "artifact.zip"
+        digest = self.make_archive(archive, [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+        ])
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "Expected artifact digest"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest="invalid"
+            )
+        destination.mkdir()
+        with self.assertRaisesRegex(ValueError, "destination already exists"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
 
 
 if __name__ == "__main__":
