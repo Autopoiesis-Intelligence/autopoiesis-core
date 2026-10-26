@@ -24,6 +24,7 @@ on:
         default: none
         options:
           - none
+          - tamper_archive
           - tamper_bytes
           - corrupt_json
           - bad_version
