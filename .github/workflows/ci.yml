@@ -177,6 +177,7 @@ jobs:
           )
           PY
       - name: Download and verify prior queue snapshot archive
+        id: archive_verification
         if: ${{ inputs.restore_run_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -211,11 +212,35 @@ jobs:
                   with archive.open("ab") as damaged:
                       damaged.write(b"tampered")
                   print("Injected archive-byte tampering before digest verification.")
-              result = verify_and_extract_artifact_archive(
-                  archive,
-                  Path(".queue-restore"),
-                  expected_digest=provenance.get("source_artifact_digest"),
-              )
+              try:
+                  result = verify_and_extract_artifact_archive(
+                      archive,
+                      Path(".queue-restore"),
+                      expected_digest=provenance.get("source_artifact_digest"),
+                  )
+              except ValueError as exc:
+                  expected_message = (
+                      "Downloaded artifact archive SHA-256 does not match source metadata"
+                  )
+                  if (
+                      os.environ.get("RESTORE_FAULT") == "tamper_archive"
+                      and str(exc) == expected_message
+                  ):
+                      output_path = os.environ.get("GITHUB_OUTPUT")
+                      if not output_path:
+                          raise SystemExit(
+                              "Expected archive digest mismatch, but GITHUB_OUTPUT is unavailable"
+                          ) from exc
+                      with open(output_path, "a", encoding="utf-8") as output:
+                          output.write("expected_gate=archive_digest_mismatch\\n")
+                      print(
+                          "EXPECTED_NEGATIVE_GATE=archive_digest_mismatch: "
+                          "tampered archive rejected by source SHA-256 check."
+                      )
+                      raise SystemExit(
+                          "Expected negative test: archive digest mismatch was confirmed"
+                      ) from exc
+                  raise
               print(
                   "Downloaded artifact archive verified before extraction: "
                   f"{result['archive_sha256']}; "
@@ -316,6 +341,16 @@ jobs:
         run: |
           echo "Injected restore fault '${{ inputs.restore_fault }}' was NOT rejected by snapshot validation." >&2
           exit 1
+      - name: Assert tamper_archive failed at the expected digest gate
+        if: ${{ always() && inputs.restore_run_id != '' && inputs.restore_fault == 'tamper_archive' }}
+        env:
+          EXPECTED_GATE: ${{ steps.archive_verification.outputs.expected_gate }}
+        run: |
+          if [[ "$EXPECTED_GATE" != "archive_digest_mismatch" ]]; then
+            echo "tamper_archive did not prove rejection at the archive digest gate; got '$EXPECTED_GATE'." >&2
+            exit 1
+          fi
+          echo "Confirmed tamper_archive rejection at the archive digest gate."
       - name: Validate workflow YAML syntax
         run: |
           ruby -e 'require "yaml"; files = Dir.glob(".github/workflows/*.{yml,yaml}").sort; abort "No workflow files found" if files.empty?; files.each { |f| YAML.load_file(f, aliases: true); puts "Parsed #{f}" }'
