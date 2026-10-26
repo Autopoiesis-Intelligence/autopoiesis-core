@@ -380,7 +380,7 @@ class QueueSnapshotTests(unittest.TestCase):
                 archive, destination, expected_digest=digest
             )
         self.assertFalse(destination.exists())
-        self.assertFalse((self.root.parent / "escaped.txt").exists())
+        self.assertFalse((self.root / "escaped.txt").exists())
 
     def test_archive_rejects_symlink_entries(self):
         archive = self.root / "symlink.zip"
