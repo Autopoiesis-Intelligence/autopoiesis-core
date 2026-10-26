@@ -74,6 +74,27 @@ class RestoreFaultGateTests(unittest.TestCase):
         self.assertEqual(len(labels), len(set(labels)))
 
 
+class WorkflowFaultGateWiringTests(unittest.TestCase):
+    def test_workflow_uses_shared_fault_injection_and_gate_matchers(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("from autopoesis.restore_fault_gates import inject_restore_fault", workflow)
+        self.assertIn("inject_restore_fault(fault, snapshot, manifest_path)", workflow)
+        self.assertIn(
+            "from autopoesis.restore_fault_gates import expected_gate_label, matched_gate",
+            workflow,
+        )
+        self.assertIn("label = matched_gate(fault, exc)", workflow)
+        self.assertIn("label == expected_gate_label(fault)", workflow)
+
+    def test_workflow_does_not_reimplement_fault_gate_matchers(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn('task_queue_sha256_mismatch', workflow)
+        self.assertNotIn('queue_json_decode_error', workflow)
+        self.assertNotIn('invalid_queue_history_event', workflow)
+        self.assertNotIn('missing_queue_snapshot', workflow)
+        self.assertNotIn('missing_queue_manifest', workflow)
+
+
 class WorkflowPythonHeredocTests(unittest.TestCase):
     # Raise this when a step adds a heredoc, so none escapes the compile check.
     EXPECTED_HEREDOCS = 8
