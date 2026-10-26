@@ -382,6 +382,27 @@ class QueueSnapshotTests(unittest.TestCase):
         self.assertFalse(destination.exists())
         self.assertFalse((self.root / "escaped.txt").exists())
 
+    def test_archive_rejects_single_backslash_traversal_paths(self):
+        archive = self.root / "unsafe-backslash.zip"
+        destination = self.root / "extracted-backslash"
+        for unsafe_name in (
+            "..\\outside.txt",
+            "..\\..\\outside.txt",
+            "folder\\..\\outside.txt",
+            "C:\\outside.txt",
+        ):
+            digest = self.make_archive(archive, [
+                ("TASK_QUEUE.json", b"{}"),
+                ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+                (unsafe_name, b"outside"),
+            ])
+            with self.subTest(name=unsafe_name):
+                with self.assertRaisesRegex(ValueError, "Unsafe path"):
+                    verify_and_extract_artifact_archive(
+                        archive, destination, expected_digest=digest
+                    )
+                self.assertFalse(destination.exists())
+
     def test_archive_rejects_symlink_entries(self):
         archive = self.root / "symlink.zip"
         with zipfile.ZipFile(archive, "w") as bundle:
