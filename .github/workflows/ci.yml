@@ -442,7 +442,7 @@ jobs:
                     bad += 1
                   end
                 end
-                step["run"].scan(/(?:\A|\n)[ \t]*python[ \t]+-[ \t]+<<['"]?PY['"]?[ \t]*\n(.*?)^[ \t]*PY[ \t]*$/m) do |match|
+                step["run"].scan(/(?:\A|\n)[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=\$\()?python[ \t]+-[ \t]+<<['"]?PY['"]?[ \t]*\n(.*?)^[ \t]*PY[ \t]*$/m) do |match|
                   python_blocks += 1
                   Tempfile.create(["workflow-python-", ".py"]) do |python|
                     python.write(match[0])
