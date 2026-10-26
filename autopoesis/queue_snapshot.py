@@ -6,7 +6,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import tempfile
+import zipfile
+from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +185,87 @@ def install_validated_queue_snapshot(
             except FileNotFoundError:
                 pass
 
+
+
+def verify_and_extract_artifact_archive(
+    archive_path: Path,
+    destination_path: Path,
+    *,
+    expected_digest: str,
+    required_files: tuple[str, ...] = (
+        "TASK_QUEUE.json",
+        "QUEUE_SNAPSHOT_MANIFEST.json",
+    ),
+) -> dict[str, Any]:
+    """Verify a downloaded artifact ZIP before safely extracting its contents."""
+    if not archive_path.is_file():
+        raise ValueError("Downloaded artifact archive is missing")
+    if not isinstance(expected_digest, str) or not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", expected_digest
+    ):
+        raise ValueError("Expected artifact digest must be a sha256-prefixed 64-character digest")
+    if destination_path.exists():
+        raise ValueError("Artifact extraction destination already exists")
+
+    digest = hashlib.sha256()
+    with archive_path.open("rb") as archive_file:
+        for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual_digest = "sha256:" + digest.hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError(
+            "Downloaded artifact archive SHA-256 does not match source metadata"
+        )
+
+    destination_path.mkdir(parents=True)
+    try:
+        with zipfile.ZipFile(archive_path) as bundle:
+            members = bundle.infolist()
+            if not members:
+                raise ValueError("Downloaded artifact archive is empty")
+            names: set[str] = set()
+            for member in members:
+                name = member.filename
+                path = PurePosixPath(name)
+                if (
+                    not name
+                    or "\\\\" in name
+                    or path.is_absolute()
+                    or ".." in path.parts
+                    or re.match(r"^[A-Za-z]:", name)
+                ):
+                    raise ValueError(
+                        f"Unsafe path in artifact archive: {name!r}"
+                    )
+                if name in names:
+                    raise ValueError(
+                        f"Duplicate path in artifact archive: {name!r}"
+                    )
+                names.add(name)
+                mode = member.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    raise ValueError(
+                        f"Symlink in artifact archive is not allowed: {name!r}"
+                    )
+            bundle.extractall(destination_path)
+        missing = [
+            name for name in required_files
+            if not (destination_path / name).is_file()
+        ]
+        if missing:
+            raise ValueError(
+                "Verified artifact archive is missing required files: "
+                + ", ".join(missing)
+            )
+    except Exception:
+        shutil.rmtree(destination_path, ignore_errors=True)
+        raise
+
+    return {
+        "archive_sha256": actual_digest,
+        "extracted_file_count": len(names),
+        "required_files": list(required_files),
+    }
 
 def validate_restore_source_run(
     run: Any,
