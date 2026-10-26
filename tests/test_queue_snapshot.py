@@ -237,6 +237,18 @@ class QueueSnapshotTests(unittest.TestCase):
                         source_head_sha=sha, source_repository=repository,
                     )
 
+    def test_restore_run_rejects_a_non_integer_first_attempt(self):
+        # True == 1 and 1.0 == 1 in Python; neither is a GitHub run_attempt.
+        for attempt in (True, 1.0, "1"):
+            run = self.valid_run()
+            run["run_attempt"] = attempt
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(ValueError, "original attempt"):
+                validate_restore_source_run(
+                    run,
+                    requested_run_id=RUN_ID,
+                    expected_repository=REPOSITORY,
+                )
+
     def test_restore_run_rejects_rerun_attempt(self):
         run = self.valid_run()
         run["run_attempt"] = 2

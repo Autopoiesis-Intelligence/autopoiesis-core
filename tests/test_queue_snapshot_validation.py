@@ -451,6 +451,12 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "run_attempt=1"):
             self._latest_check(300, runs)
 
+    def test_newest_dispatch_with_a_non_integer_attempt_fails_closed(self):
+        for attempt in (True, 1.0):
+            runs = [self._dispatch_run(500), self._dispatch_run(450, run_attempt=attempt), self._dispatch_run(300)]
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(ValueError, "run_attempt=1"):
+                self._latest_check(300, runs)
+
     def test_newer_failed_dispatch_blocks_snapshot_fallback(self):
         runs = [
             self._dispatch_run(500),
