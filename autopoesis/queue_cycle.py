@@ -15,6 +15,7 @@ from autopoesis.task_queue import (
     load_queue,
     MAX_ATTEMPTS,
     record_verification_file,
+    recover_expired_leases_file,
     select_next_task_file,
 )
 from run_tasks import ROOT, execute_task
@@ -39,6 +40,9 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     the tested source digest still matches.
     """
     try:
+        # A cycle that died mid-task (runner timeout, OOM) leaves its lease behind;
+        # without this, every later cycle would report "work already active" forever.
+        recover_expired_leases_file(queue_path)
         selection = select_next_task_file(
             queue_path,
             OWNER,

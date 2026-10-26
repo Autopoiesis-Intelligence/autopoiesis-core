@@ -5,6 +5,7 @@ lease-bound evidence; it does not claim the sandbox executor ran here.
 """
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -12,7 +13,9 @@ from autopoesis.queue_cycle import run_one_queue_cycle
 from autopoesis.task_queue import (
     current_attempt,
     load_queue,
+    advance_task_file,
     record_verification_file,
+    select_next_task_file,
     update_queue_file,
 )
 import autopoesis.queue_cycle as queue_cycle
@@ -352,6 +355,36 @@ class BoundedQueueCycleTests(unittest.TestCase):
         follow_up = run_one_queue_cycle(self.queue_path)
         self.assertEqual(follow_up["status"], "NO_WORK")
         self.assertEqual(self.queue_path.read_bytes(), before)
+
+
+    def test_cycle_recovers_an_expired_lease_left_by_a_crashed_cycle(self):
+        # A cycle killed after IN_PROGRESS (runner timeout, OOM) leaves its lease behind.
+        # Once that lease expires, the next cycle must recover it instead of reporting
+        # "work already active" forever.
+        crashed_at = datetime.now(timezone.utc) - timedelta(days=2)
+        selection = select_next_task_file(self.queue_path, queue_cycle.OWNER, now=crashed_at)
+        advance_task_file(
+            self.queue_path, "CYCLE-001", "IN_PROGRESS", "cycle that later crashed",
+            owner=queue_cycle.OWNER, token=selection["lease"]["token"], now=crashed_at,
+        )
+        with mock.patch.object(
+            queue_cycle, "execute_task",
+            side_effect=lambda task, path: self._fixture_handler(task, path, "PASS"),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(result["status"], "COMPLETED")
+        item = next(item for item in load_queue(self.queue_path)["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "DONE")
+        self.assertEqual(item["attempts"], 2)
+
+    def test_cycle_leaves_an_unexpired_lease_alone(self):
+        selection = select_next_task_file(self.queue_path, "another-holder")
+        before = self.queue_path.read_bytes()
+        result = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(result["status"], "NO_WORK")
+        self.assertIn("work already active", result["reason"])
+        self.assertEqual(self.queue_path.read_bytes(), before)
+        self.assertTrue(selection["lease"]["token"])
 
 
 if __name__ == "__main__":
