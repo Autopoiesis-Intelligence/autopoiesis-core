@@ -261,7 +261,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run one bounded queue cycle and print its outcome as JSON.")
     parser.add_argument("--queue", type=Path, default=Path("TASK_QUEUE.json"))
     args = parser.parse_args(argv)
-    result = run_one_queue_cycle(args.queue)
+    # The library reads a missing queue as an empty first-run queue; from the command line
+    # a missing file is far more likely a wrong path, so it must not pass as NO_WORK.
+    if not args.queue.is_file():
+        result = {"status": "RECOVERY_REQUIRED", "task_id": None, "reopened": False,
+                  "reason": f"queue file not found: {args.queue}"}
+    else:
+        result = run_one_queue_cycle(args.queue)
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return EXIT_CODES.get(result.get("status"), 3)
 

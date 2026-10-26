@@ -442,6 +442,19 @@ class BoundedQueueCycleTests(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())["status"], "NO_WORK")
         self.assertEqual(self.queue_path.read_bytes(), before)
 
+    def test_command_line_refuses_a_missing_queue_file_instead_of_reporting_no_work(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+
+        missing = self.queue_path.parent / "no-such-queue.json"
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = queue_cycle.main(["--queue", str(missing)])
+        self.assertEqual(code, 3)
+        self.assertEqual(json.loads(out.getvalue())["status"], "RECOVERY_REQUIRED")
+        self.assertFalse(missing.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
