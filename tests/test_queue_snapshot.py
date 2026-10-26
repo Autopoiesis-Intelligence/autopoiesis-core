@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from autopoesis.queue_snapshot import (
+    MAX_ARCHIVE_BYTES,
     bind_source_artifact,
     create_queue_snapshot_manifest,
     install_validated_queue_snapshot,
@@ -366,6 +367,22 @@ class QueueSnapshotTests(unittest.TestCase):
         self.assertEqual(result["extracted_file_count"], 2)
         self.assertTrue((destination / "TASK_QUEUE.json").is_file())
         self.assertTrue((destination / "QUEUE_SNAPSHOT_MANIFEST.json").is_file())
+
+    def test_archive_rejects_excessive_archive_size_before_digest_or_extraction(self):
+        archive = self.root / "oversized-archive.zip"
+        # A sparse file exercises the pre-digest size guard without allocating
+        # or hashing a 32 MiB+ payload.
+        with archive.open("wb") as stream:
+            stream.seek(MAX_ARCHIVE_BYTES)
+            stream.write(b"x")
+        destination = self.root / "extracted"
+
+        with self.assertRaisesRegex(ValueError, "archive exceeds size limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest="sha256:" + "0" * 64
+            )
+
+        self.assertFalse(destination.exists())
 
     def test_archive_rejects_excessive_member_count_before_extraction(self):
         archive = self.root / "too-many-members.zip"
