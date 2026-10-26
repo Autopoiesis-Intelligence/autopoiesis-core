@@ -19,12 +19,13 @@ on:
         type: boolean
         default: false
       restore_fault:
-        description: "Negative check only: corrupt the downloaded snapshot before validation. The run must then fail; it fails anyway if the fault is not rejected."
+        description: "Negative restore test: tamper with the downloaded archive or snapshot. The run must fail at the expected integrity/schema gate."
         required: false
         type: choice
         default: none
         options:
           - none
+          - tamper_archive
           - tamper_bytes
           - corrupt_json
           - bad_version
@@ -179,6 +180,7 @@ jobs:
         if: ${{ inputs.restore_run_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          RESTORE_FAULT: ${{ inputs.restore_fault }}
         run: |
           python - <<'PY'
           import json
@@ -203,6 +205,10 @@ jobs:
                   ],
                   check=True,
               )
+              if os.environ.get("RESTORE_FAULT") == "tamper_archive":
+                  with archive.open("ab") as damaged:
+                      damaged.write(b"tampered")
+                  print("Injected archive-byte tampering before digest verification.")
               result = verify_and_extract_artifact_archive(
                   archive,
                   Path(".queue-restore"),
