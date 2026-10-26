@@ -397,11 +397,11 @@ class QueueSnapshotTests(unittest.TestCase):
 
     def test_archive_rejects_excessive_compression_ratio_before_extraction(self):
         archive = self.root / "high-ratio.zip"
-        digest = self.make_archive(archive, [
-            ("TASK_QUEUE.json", b"{}"),
-            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
-            ("repetitive.bin", b"x" * (1024 * 1024)),
-        ])
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("TASK_QUEUE.json", b"{}")
+            bundle.writestr("QUEUE_SNAPSHOT_MANIFEST.json", b"{}")
+            bundle.writestr("repetitive.bin", b"x" * (1024 * 1024))
+        digest = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
         destination = self.root / "extracted"
         with self.assertRaisesRegex(ValueError, "compression ratio limit"):
             verify_and_extract_artifact_archive(
