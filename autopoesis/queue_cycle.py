@@ -192,6 +192,34 @@ def _run_cycle(queue_path: Path, rejected_after_recovery: list[str]) -> dict[str
             revision=current_revision,
             token=token,
         )
+        # Recompute after persisting coordinator PASS: the source tree may have
+        # changed between the earlier digest and this finalization boundary.
+        # This narrows the TOCTOU window; it cannot eliminate an external writer
+        # racing after this check unless the source tree is locked or immutable.
+        final_revision = source_tree_digest(ROOT / "autopoesis")
+        if final_revision != current_revision:
+            terminal = attempt is not None and attempt >= MAX_ATTEMPTS
+            failure_status = "REJECTED" if terminal else "OPEN"
+            advance_task_file(
+                queue_path,
+                task_id,
+                failure_status,
+                (
+                    "source tree changed after coordinator PASS evidence was recorded; "
+                    + ("attempt limit reached; task rejected" if terminal else "retry required")
+                ),
+                owner=OWNER,
+                token=token,
+            )
+            return {
+                "status": "REJECTED" if terminal else "RETRYABLE_FAILURE",
+                "task_id": task_id,
+                "reason": "source tree changed after PASS evidence and before DONE finalization",
+                "attempt": attempt,
+                "verified_revision": current_revision,
+                "final_revision": final_revision,
+            }
+
         advance_task_file(
             queue_path,
             task_id,
