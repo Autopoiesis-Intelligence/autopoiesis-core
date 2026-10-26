@@ -303,6 +303,7 @@ jobs:
           import os
           from pathlib import Path
           from autopoesis.queue_snapshot import install_validated_queue_snapshot, validate_queue_snapshot
+          from autopoesis.restore_fault_gates import expected_gate_label, matched_gate
           from autopoesis.task_queue import load_queue
 
           snapshot = Path(".queue-restore/TASK_QUEUE.json")
@@ -310,36 +311,6 @@ jobs:
           provenance_path = Path("QUEUE_RESTORE_PROVENANCE.json")
           provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
           fault = os.environ.get("RESTORE_FAULT", "")
-
-          expected = {
-              "tamper_bytes": (
-                  "task_queue_sha256_mismatch",
-                  lambda message: message == "TASK_QUEUE.json SHA-256 does not match source snapshot manifest",
-              ),
-              "corrupt_json": (
-                  "queue_json_decode_error",
-                  lambda message: message.startswith("Cannot read task queue:") and bool(message.partition(":")[2].strip()),
-              ),
-              "bad_version": (
-                  "unsupported_queue_version",
-                  lambda message: message == "Unsupported task queue format",
-              ),
-              "bad_history": (
-                  "invalid_queue_history_event",
-                  lambda message: (
-                      message.startswith("Invalid task queue history entry at index")
-                      and "unsupported event type 'UNKNOWN_EVENT'" in message
-                  ),
-              ),
-              "drop_queue": (
-                  "missing_queue_snapshot",
-                  lambda message: message == "Queue snapshot file is missing",
-              ),
-              "drop_manifest": (
-                  "missing_queue_manifest",
-                  lambda message: message == "Queue snapshot manifest file is missing",
-              ),
-          }
 
           try:
               validation = validate_queue_snapshot(
@@ -350,17 +321,16 @@ jobs:
                   source_repository=provenance.get("source_repository"),
               )
           except Exception as exc:
-              message = str(exc)
-              expected_case = expected.get(fault)
-              if expected_case is not None and expected_case[1](message):
-                  label = expected_case[0]
+              label = matched_gate(fault, exc)
+              if label is not None and label == expected_gate_label(fault):
+                  message = str(exc)
                   with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
                       output.write(f"expected_gate={label}\n")
                   print(f"EXPECTED_NEGATIVE_GATE={label}: {message}")
                   raise SystemExit(f"Expected negative restore gate confirmed: {label}") from exc
               raise
 
-          if fault in expected:
+          if fault in {"tamper_bytes", "corrupt_json", "bad_version", "bad_history", "drop_queue", "drop_manifest"}:
               raise SystemExit(
                   f"Restore fault {fault!r} was not rejected at its expected validation gate"
               )
@@ -396,7 +366,7 @@ jobs:
           EXPECTED_GATE: ${{ steps.restore_validation.outputs.expected_gate }}
         run: |
           case "$RESTORE_FAULT:$EXPECTED_GATE" in
-            tamper_bytes:task_queue_sha256_mismatch|corrupt_json:queue_json_decode_error|bad_version:unsupported_queue_version|bad_history:invalid_queue_history_event|drop_queue:missing_queue_snapshot|drop_manifest:missing_queue_manifest)
+            tamper_bytes:queue_digest_mismatch|corrupt_json:queue_json_unreadable|bad_version:unsupported_queue_version|bad_history:unsupported_history_event|drop_queue:queue_snapshot_missing|drop_manifest:queue_manifest_missing)
               echo "Confirmed expected restore rejection: $RESTORE_FAULT -> $EXPECTED_GATE"
               ;;
             *)
