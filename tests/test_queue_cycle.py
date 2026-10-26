@@ -289,5 +289,70 @@ class BoundedQueueCycleTests(unittest.TestCase):
         self.assertEqual(result["deferred"][0]["id"], "UNSUPPORTED-001")
 
 
+    def test_done_write_failure_before_persisting_does_not_report_completed(self):
+        original_advance = queue_cycle.advance_task_file
+
+        def fail_before_done(path, task_id, status, *args, **kwargs):
+            if status == "DONE":
+                raise OSError("simulated failure before DONE persistence")
+            return original_advance(path, task_id, status, *args, **kwargs)
+
+        with (
+            mock.patch.object(
+                queue_cycle, "execute_task",
+                side_effect=lambda task, path: self._fixture_handler(task, path, "PASS"),
+            ),
+            mock.patch.object(queue_cycle, "advance_task_file", side_effect=fail_before_done),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertNotEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["status"], "RETRYABLE_FAILURE")
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "OPEN")
+        self.assertFalse(any(
+            event.get("event") == "STATUS_CHANGED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("to") == "DONE"
+            for event in queue["history"]
+        ))
+
+    def test_done_write_persists_then_raises_is_reported_conservatively(self):
+        original_advance = queue_cycle.advance_task_file
+
+        def persist_done_then_raise(path, task_id, status, *args, **kwargs):
+            result = original_advance(path, task_id, status, *args, **kwargs)
+            if status == "DONE":
+                raise OSError("simulated lost acknowledgement after DONE persistence")
+            return result
+
+        with (
+            mock.patch.object(
+                queue_cycle, "execute_task",
+                side_effect=lambda task, path: self._fixture_handler(task, path, "PASS"),
+            ),
+            mock.patch.object(queue_cycle, "advance_task_file", side_effect=persist_done_then_raise),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        # The coordinator must not invent success from the exception. The
+        # terminal persisted state and lease-bound PASS evidence remain inspectable.
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "DONE")
+        self.assertTrue(any(
+            event.get("event") == "VERIFICATION_RECORDED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("verification_status") == "PASS"
+            for event in queue["history"]
+        ))
+        before = self.queue_path.read_bytes()
+        follow_up = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(follow_up["status"], "NO_WORK")
+        self.assertEqual(self.queue_path.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
