@@ -3,6 +3,7 @@
 The PASS/FAIL handler in these tests is a controlled fixture that records
 lease-bound evidence; it does not claim the sandbox executor ran here.
 """
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -373,6 +374,34 @@ class BoundedQueueCycleTests(unittest.TestCase):
         ):
             result = run_one_queue_cycle(self.queue_path)
         self.assertEqual(result["status"], "COMPLETED")
+        item = next(item for item in load_queue(self.queue_path)["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "DONE")
+        self.assertEqual(item["attempts"], 2)
+
+    def test_lease_that_expires_while_the_task_runs_never_reaches_done(self):
+        # The coordinator does not renew its lease. If execution outlives it, the PASS must
+        # not be finalized: the lease-bound writes fail closed and a later cycle recovers.
+        def outlive_lease(task, path):
+            result = self._fixture_handler(task, path, "PASS")
+            queue = json.loads(path.read_text(encoding="utf-8"))
+            item = next(entry for entry in queue["items"] if entry["id"] == task["queue_task_id"])
+            item["lease"]["expires_at"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+            path.write_text(json.dumps(queue), encoding="utf-8")
+            return result
+
+        with mock.patch.object(queue_cycle, "execute_task", side_effect=outlive_lease):
+            result = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
+        self.assertIn("STALE_LEASE", result["reason"])
+        item = next(item for item in load_queue(self.queue_path)["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "IN_PROGRESS")
+
+        with mock.patch.object(
+            queue_cycle, "execute_task",
+            side_effect=lambda task, path: self._fixture_handler(task, path, "PASS"),
+        ):
+            follow_up = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(follow_up["status"], "COMPLETED")
         item = next(item for item in load_queue(self.queue_path)["items"] if item["id"] == "CYCLE-001")
         self.assertEqual(item["status"], "DONE")
         self.assertEqual(item["attempts"], 2)
