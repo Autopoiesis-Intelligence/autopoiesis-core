@@ -367,6 +367,48 @@ class QueueSnapshotTests(unittest.TestCase):
         self.assertTrue((destination / "TASK_QUEUE.json").is_file())
         self.assertTrue((destination / "QUEUE_SNAPSHOT_MANIFEST.json").is_file())
 
+    def test_archive_rejects_excessive_member_count_before_extraction(self):
+        archive = self.root / "too-many-members.zip"
+        entries = [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+        ] + [(f"extra-{index}.txt", b"x") for index in range(99)]
+        digest = self.make_archive(archive, entries)
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "member count limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
+
+    def test_archive_rejects_excessive_member_size_before_extraction(self):
+        archive = self.root / "oversized-member.zip"
+        digest = self.make_archive(archive, [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+            ("large.bin", b"x" * (8 * 1024 * 1024 + 1)),
+        ])
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "member exceeds uncompressed size limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
+
+    def test_archive_rejects_excessive_compression_ratio_before_extraction(self):
+        archive = self.root / "high-ratio.zip"
+        digest = self.make_archive(archive, [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+            ("repetitive.bin", b"x" * (1024 * 1024)),
+        ])
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "compression ratio limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
+
     def test_archive_rejects_path_traversal_and_cleans_partial_output(self):
         archive = self.root / "unsafe.zip"
         digest = self.make_archive(archive, [
