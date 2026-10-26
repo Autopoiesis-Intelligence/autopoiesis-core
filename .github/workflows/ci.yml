@@ -198,13 +198,15 @@ jobs:
 
           archive = Path(".queue-restore-artifact.zip")
           try:
-              subprocess.run(
-                  [
-                      "gh", "api", "--output", str(archive),
-                      f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{artifact_id}/zip",
-                  ],
-                  check=True,
-              )
+              with archive.open("wb") as archive_output:
+                  subprocess.run(
+                      [
+                          "gh", "api",
+                          f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{artifact_id}/zip",
+                      ],
+                      stdout=archive_output,
+                      check=True,
+                  )
               if os.environ.get("RESTORE_FAULT") == "tamper_archive":
                   with archive.open("ab") as damaged:
                       damaged.write(b"tampered")
