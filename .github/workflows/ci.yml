@@ -388,6 +388,7 @@ jobs:
               "Prior task queue snapshot restored and validated; "
               f"queue SHA-256 {provenance['restored_queue_sha256']}."
           )
+          PY
       - name: Assert injected restore fault failed at its expected validation gate
         if: ${{ always() && inputs.restore_run_id != '' && inputs.restore_fault != '' && inputs.restore_fault != 'none' && inputs.restore_fault != 'tamper_archive' }}
         env:
