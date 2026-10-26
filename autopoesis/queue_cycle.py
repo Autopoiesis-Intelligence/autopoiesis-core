@@ -42,7 +42,20 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     try:
         # A cycle that died mid-task (runner timeout, OOM) leaves its lease behind;
         # without this, every later cycle would report "work already active" forever.
-        recover_expired_leases_file(queue_path)
+        recovered = recover_expired_leases_file(queue_path)["recovered"]
+        # Recovery returns work to OPEN; a task that already used every attempt would then
+        # only be deferred forever, so it ends REJECTED here instead.
+        rejected_after_recovery = []
+        if recovered:
+            items = {entry.get("id"): entry for entry in load_queue(queue_path)["items"]}
+            for recovered_id in recovered:
+                entry = items.get(recovered_id, {})
+                if entry.get("status") == "OPEN" and entry.get("attempts", 0) >= MAX_ATTEMPTS:
+                    advance_task_file(
+                        queue_path, recovered_id, "REJECTED",
+                        "lease expired on the last attempt; attempt limit reached; task rejected",
+                    )
+                    rejected_after_recovery.append(recovered_id)
         selection = select_next_task_file(
             queue_path,
             OWNER,
@@ -65,6 +78,7 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             "status": "NO_WORK",
             "reason": selection.get("reason", "no eligible task"),
             "deferred": selection.get("deferred", []),
+            "rejected_after_recovery": rejected_after_recovery,
         }
 
     try:

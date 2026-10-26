@@ -387,5 +387,29 @@ class BoundedQueueCycleTests(unittest.TestCase):
         self.assertTrue(selection["lease"]["token"])
 
 
+    def test_expired_lease_on_the_last_attempt_ends_rejected_not_deferred(self):
+        # Two failed cycles, then a third that crashes after IN_PROGRESS: the task has used
+        # every attempt, so recovery must end it REJECTED instead of parking it in OPEN.
+        for _ in range(2):
+            with mock.patch.object(
+                queue_cycle, "execute_task",
+                side_effect=lambda task, path: self._fixture_handler(task, path, "FAIL"),
+            ):
+                self.assertEqual(run_one_queue_cycle(self.queue_path)["status"], "RETRYABLE_FAILURE")
+        crashed_at = datetime.now(timezone.utc) - timedelta(days=2)
+        selection = select_next_task_file(self.queue_path, queue_cycle.OWNER, now=crashed_at)
+        advance_task_file(
+            self.queue_path, "CYCLE-001", "IN_PROGRESS", "third cycle that later crashed",
+            owner=queue_cycle.OWNER, token=selection["lease"]["token"], now=crashed_at,
+        )
+        result = run_one_queue_cycle(self.queue_path)
+        self.assertEqual(result["status"], "NO_WORK")
+        self.assertEqual(result["rejected_after_recovery"], ["CYCLE-001"])
+        item = next(item for item in load_queue(self.queue_path)["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "REJECTED")
+        self.assertEqual(item["attempts"], 3)
+        self.assertNotIn("CYCLE-001", [entry.get("id") for entry in result["deferred"]])
+
+
 if __name__ == "__main__":
     unittest.main()
