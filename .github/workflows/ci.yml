@@ -232,7 +232,7 @@ jobs:
                               "Expected archive digest mismatch, but GITHUB_OUTPUT is unavailable"
                           ) from exc
                       with open(output_path, "a", encoding="utf-8") as output:
-                          output.write("expected_gate=archive_digest_mismatch\\n")
+                          output.write("expected_gate=archive_digest_mismatch\n")
                       print(
                           "EXPECTED_NEGATIVE_GATE=archive_digest_mismatch: "
                           "tampered archive rejected by source SHA-256 check."
