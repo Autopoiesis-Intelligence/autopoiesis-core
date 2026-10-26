@@ -213,6 +213,19 @@ def apply_patch_to_sandbox(artifact: dict[str, Any], sandbox_root: Path) -> dict
         "generated_code_executed": False,
     }
 
+def source_tree_digest(package: Path) -> str:
+    """SHA-256 over the relative paths and contents of a package's files, ignoring bytecode caches."""
+    digest = hashlib.sha256()
+    files = sorted(
+        path for path in package.rglob("*")
+        if path.is_file() and "__pycache__" not in path.relative_to(package).parts
+    )
+    for path in files:
+        digest.update(path.relative_to(package).as_posix().encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii") + b"\n")
+    return digest.hexdigest()
+
+
 def verify_test_patch_in_sandbox(
     task: dict[str, Any],
     repository_root: Path,
@@ -239,6 +252,7 @@ def verify_test_patch_in_sandbox(
     with tempfile.TemporaryDirectory(prefix="autopoesis-verify-") as directory:
         workspace = Path(directory)
         shutil.copytree(source_package, workspace / "autopoesis", symlinks=True)
+        tested_revision = source_tree_digest(workspace / "autopoesis")
         (workspace / "tests").mkdir()
         application = apply_patch_to_sandbox(artifact, workspace)
         generated_path = artifact["files"][0]["path"]
@@ -251,6 +265,7 @@ def verify_test_patch_in_sandbox(
             "generated_test": generated_path,
             "timeout_seconds": timeout_seconds,
             "artifact_sha256": artifact["artifact_sha256"],
+            "source_tree_sha256": tested_revision,
             "sandbox_application": application,
             "source_package_copied": True,
             "repository_modified": False,

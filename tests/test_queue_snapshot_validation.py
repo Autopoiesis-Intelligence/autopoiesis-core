@@ -9,16 +9,43 @@ from autopoesis.core import EvolutionError
 from autopoesis.queue_snapshot import (
     bind_source_artifact,
     create_queue_snapshot_manifest,
+    install_validated_queue_snapshot,
     latest_source_run_id,
     require_latest_source_run,
     validate_queue_snapshot,
     validate_restore_source_run,
 )
-from autopoesis.task_queue import load_queue, update_queue_file
+from autopoesis.executor import source_tree_digest
+from autopoesis.task_queue import load_queue, record_verification_file, update_queue_file
 from run_tasks import run
 
 
 class QueueSnapshotValidationTests(unittest.TestCase):
+    def test_staged_snapshot_digest_mismatch_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = root / "source-TASK_QUEUE.json"
+            destination = root / "TASK_QUEUE.json"
+            snapshot.write_text(
+                '{"version":1,"items":[],"history":[]}',
+                encoding="utf-8",
+            )
+            original_destination = b'{ "version": 1, "items": [], "history": [] }\n'
+            destination.write_bytes(original_destination)
+            expected_queue = load_queue(snapshot)
+
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                install_validated_queue_snapshot(
+                    snapshot,
+                    destination,
+                    expected_queue=expected_queue,
+                    expected_sha256="0" * 64,
+                    expected_size_bytes=snapshot.stat().st_size,
+                )
+
+            self.assertEqual(destination.read_bytes(), original_destination)
+            self.assertEqual(load_queue(destination), expected_queue)
+
     def test_corrupt_json_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / "TASK_QUEUE.json"
@@ -118,14 +145,27 @@ class QueueSnapshotValidationTests(unittest.TestCase):
             }
             update_queue_file(queue_path, [candidate])
 
-            tasks_path.write_text(json.dumps({"tasks": [{
-                "id": "set-status",
-                "type": "update_task_status",
-                "task_id": candidate["id"],
-                "status": "DONE",
-                "note": "first invocation",
-            }]}), encoding="utf-8")
-            self.assertEqual(run(tasks_path, results_path, queue_path), 0)
+            def lease_token():
+                item = load_queue(queue_path)["items"][0]
+                return (item.get("lease") or {}).get("token")
+
+            def set_status(status):
+                tasks_path.write_text(json.dumps({"tasks": [{
+                    "id": f"set-{status}",
+                    "type": "update_task_status",
+                    "task_id": candidate["id"],
+                    "status": status,
+                    "note": "first invocation",
+                    "lease_token": lease_token(),
+                }]}), encoding="utf-8")
+                self.assertEqual(run(tasks_path, results_path, queue_path), 0)
+
+            set_status("SELECTED")
+            set_status("IN_PROGRESS")
+            record_verification_file(queue_path, candidate["id"], "PASS", "UNIT_TEST_FIXTURE", source=candidate["source"],
+                                     attempt=1, token=lease_token(),
+                                     revision=source_tree_digest(Path(__file__).resolve().parents[1] / "autopoesis"))
+            set_status("DONE")
             after_first_run = load_queue(queue_path)
             prior_history = list(after_first_run["history"])
             self.assertEqual(after_first_run["items"][0]["status"], "DONE")
@@ -230,6 +270,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
     def _valid_source_run(self):
         return {
             "id": 12345,
+            "run_attempt": 1,
             "conclusion": "success",
             "event": "workflow_dispatch",
             "path": ".github/workflows/ci.yml@refs/heads/main",
@@ -347,6 +388,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
     def _dispatch_run(self, run_id, **overrides):
         run = {
             "id": run_id,
+            "run_attempt": 1,
             "conclusion": "success",
             "event": "workflow_dispatch",
             "head_branch": "main",
@@ -376,19 +418,90 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not the latest snapshot.*latest is 300"):
             self._latest_check(200, runs)
 
-    def test_runs_that_cannot_hold_a_snapshot_do_not_count_as_newer(self):
+    def test_malformed_run_history_entry_fails_closed(self):
         runs = [
             self._dispatch_run(500),
-            self._dispatch_run(450, conclusion="failure"),
             self._dispatch_run(440, event="push"),
             self._dispatch_run(430, head_branch="other"),
             self._dispatch_run(420, path=".github/workflows/other.yml@refs/heads/main"),
-            self._dispatch_run("410"),
             "not-a-run",
             self._dispatch_run(300),
         ]
 
-        self.assertTrue(self._latest_check(300, runs)["source_is_latest"])
+        with self.assertRaisesRegex(ValueError, "entry 4 must be a JSON object"):
+            self._latest_check(300, runs)
+
+    def test_run_history_entry_with_non_integer_id_fails_closed(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run("410"),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "entry 1 must contain an integer run ID"):
+            self._latest_check(300, runs)
+
+    def test_newer_rerun_dispatch_blocks_snapshot_fallback(self):
+        runs = [
+            self._dispatch_run(500, run_attempt=1),
+            self._dispatch_run(450, run_attempt=2),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "run_attempt=1"):
+            self._latest_check(300, runs)
+
+    def test_newest_dispatch_with_a_non_integer_attempt_fails_closed(self):
+        for attempt in (True, 1.0):
+            runs = [self._dispatch_run(500), self._dispatch_run(450, run_attempt=attempt), self._dispatch_run(300)]
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(ValueError, "run_attempt=1"):
+                self._latest_check(300, runs)
+
+    def test_newer_failed_dispatch_blocks_snapshot_fallback(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run(450, conclusion="failure"),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "newest workflow_dispatch snapshot run 450"):
+            self._latest_check(300, runs)
+
+    def test_newer_negative_fault_run_blocks_snapshot_fallback_even_when_failed(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run(
+                450,
+                conclusion="failure",
+                display_title="Negative restore fault: tamper_bytes",
+            ),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "negative restore fault run"):
+            latest_source_run_id(
+                {"workflow_runs": runs},
+                current_run_id=500,
+                current_branch="main",
+            )
+
+    def test_negative_fault_run_with_success_conclusion_fails_closed(self):
+        runs = [
+            self._dispatch_run(500),
+            self._dispatch_run(
+                450,
+                conclusion="success",
+                display_title="Negative restore fault: tamper_bytes",
+            ),
+            self._dispatch_run(300),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "negative restore fault run"):
+            latest_source_run_id(
+                {"workflow_runs": runs},
+                current_run_id=500,
+                current_branch="main",
+            )
 
     def test_source_from_another_branch_is_rejected(self):
         runs = [self._dispatch_run(300, head_branch="other"), self._dispatch_run(200)]
@@ -396,7 +509,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not the latest snapshot.*latest is 200"):
             self._latest_check(300, runs)
 
-    def test_automatic_selection_picks_newest_eligible_run_and_skips_the_current_one(self):
+    def test_automatic_selection_refuses_newer_failed_run_and_skips_the_current_one(self):
         runs = [
             self._dispatch_run(500),
             self._dispatch_run(450, conclusion="failure"),
@@ -404,10 +517,12 @@ class QueueSnapshotValidationTests(unittest.TestCase):
             self._dispatch_run(200),
         ]
 
-        self.assertEqual(
-            latest_source_run_id({"workflow_runs": runs}, current_run_id=500, current_branch="main"),
-            300,
-        )
+        with self.assertRaisesRegex(ValueError, "newest workflow_dispatch snapshot run 450"):
+            latest_source_run_id(
+                {"workflow_runs": runs},
+                current_run_id=500,
+                current_branch="main",
+            )
 
     def test_automatic_selection_fails_closed_without_an_eligible_run(self):
         runs = [self._dispatch_run(500), self._dispatch_run(300, head_branch="other")]
