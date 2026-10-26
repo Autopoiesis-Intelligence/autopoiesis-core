@@ -255,42 +255,15 @@ jobs:
           RESTORE_FAULT: ${{ inputs.restore_fault }}
         run: |
           python - <<'PY'
-          import hashlib
-          import json
           import os
           from pathlib import Path
+          from autopoesis.restore_fault_gates import inject_restore_fault
 
           fault = os.environ["RESTORE_FAULT"]
           snapshot = Path(".queue-restore/TASK_QUEUE.json")
           manifest_path = Path(".queue-restore/QUEUE_SNAPSHOT_MANIFEST.json")
-
-          def rebind(data):
-              # Keep the manifest consistent so the queue loader, not the hash check, must reject it.
-              snapshot.write_bytes(data)
-              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-              manifest["task_queue_sha256"] = hashlib.sha256(data).hexdigest()
-              manifest["task_queue_size_bytes"] = len(data)
-              manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-          if fault == "tamper_bytes":
-              snapshot.write_bytes(snapshot.read_bytes() + b" ")
-          elif fault == "corrupt_json":
-              rebind(b'{"version": 1, "items": [')
-          elif fault == "bad_version":
-              queue = json.loads(snapshot.read_text(encoding="utf-8"))
-              queue["version"] = 2
-              rebind(json.dumps(queue).encode("utf-8"))
-          elif fault == "bad_history":
-              queue = json.loads(snapshot.read_text(encoding="utf-8"))
-              queue["history"].append({"event": "UNKNOWN_EVENT", "task_id": "CI-RESTORE-DONE-PROBE"})
-              rebind(json.dumps(queue).encode("utf-8"))
-          elif fault == "drop_queue":
-              snapshot.unlink()
-          elif fault == "drop_manifest":
-              manifest_path.unlink()
-          else:
-              raise SystemExit(f"Unknown restore_fault {fault!r}")
-          print(f"Injected restore fault {fault!r} into the downloaded snapshot.")
+          inject_restore_fault(fault, snapshot, manifest_path)
+          print(f"Injected restore fault {fault!r} using the tested helper.")
           PY
       - name: Validate and install prior queue snapshot
         id: restore_validation
