@@ -175,15 +175,92 @@ jobs:
               f"with archive digest {provenance['source_artifact_digest']}."
           )
           PY
-      - name: Download prior queue snapshot
+      - name: Download and verify prior queue snapshot archive
         if: ${{ inputs.restore_run_id != '' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: autopoesis-core-results
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ steps.source.outputs.run_id }}
-          path: .queue-restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import stat
+          import subprocess
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          provenance = json.loads(
+              Path("QUEUE_RESTORE_PROVENANCE.json").read_text(encoding="utf-8")
+          )
+          artifact_id = provenance.get("source_artifact_id")
+          expected_digest = provenance.get("source_artifact_digest")
+          if type(artifact_id) is not int or artifact_id <= 0:
+              raise SystemExit("Refusing: source artifact ID is invalid")
+          if not isinstance(expected_digest, str) or not re.fullmatch(
+              r"sha256:[0-9a-f]{64}", expected_digest
+          ):
+              raise SystemExit("Refusing: source artifact digest is invalid")
+
+          archive = Path(".queue-restore-artifact.zip")
+          subprocess.run(
+              [
+                  "gh", "api", "--output", str(archive),
+                  f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{artifact_id}/zip",
+              ],
+              check=True,
+          )
+          actual_digest = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+          if actual_digest != expected_digest:
+              archive.unlink(missing_ok=True)
+              raise SystemExit(
+                  "Refusing to extract artifact: downloaded ZIP SHA-256 "
+                  f"{actual_digest} does not match source metadata {expected_digest}"
+              )
+
+          destination = Path(".queue-restore")
+          if destination.exists():
+              shutil.rmtree(destination)
+          destination.mkdir(parents=True)
+          try:
+              with zipfile.ZipFile(archive) as bundle:
+                  members = bundle.infolist()
+                  if not members:
+                      raise SystemExit("Refusing to extract an empty artifact archive")
+                  for member in members:
+                      path = PurePosixPath(member.filename)
+                      if path.is_absolute() or ".." in path.parts:
+                          raise SystemExit(
+                              f"Refusing unsafe artifact archive path: {member.filename!r}"
+                          )
+                      mode = member.external_attr >> 16
+                      if stat.S_ISLNK(mode):
+                          raise SystemExit(
+                              f"Refusing symlink in artifact archive: {member.filename!r}"
+                          )
+                  bundle.extractall(destination)
+          except Exception:
+              shutil.rmtree(destination, ignore_errors=True)
+              raise
+          finally:
+              archive.unlink(missing_ok=True)
+
+          required = (
+              destination / "TASK_QUEUE.json",
+              destination / "QUEUE_SNAPSHOT_MANIFEST.json",
+          )
+          missing = [str(path) for path in required if not path.is_file()]
+          if missing:
+              raise SystemExit(
+                  "Verified artifact archive is missing required snapshot files: "
+                  + ", ".join(missing)
+              )
+          print(
+              "Downloaded artifact archive SHA-256 matches source metadata; "
+              "snapshot files extracted safely."
+          )
+          PY
       - name: Inject restore fault for negative verification
         if: ${{ inputs.restore_run_id != '' && inputs.restore_fault != '' && inputs.restore_fault != 'none' }}
         env:
