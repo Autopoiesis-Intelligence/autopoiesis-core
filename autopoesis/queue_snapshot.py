@@ -229,7 +229,7 @@ def verify_and_extract_artifact_archive(
                 path = PurePosixPath(name)
                 if (
                     not name
-                    or "\\\\" in name
+                    or "\\" in name
                     or path.is_absolute()
                     or ".." in path.parts
                     or re.match(r"^[A-Za-z]:", name)
