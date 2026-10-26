@@ -51,6 +51,14 @@ class ScheduledWorkflowContractTests(unittest.TestCase):
         self.assertIn("exit 1", guard)
         self.assertNotIn("||", job_if)
 
+    def test_emergency_guard_is_the_first_workflow_step(self):
+        # The job-history validator accepts only "Set up job" before the guard,
+        # so no workflow step may be placed ahead of it.
+        lines = self.source.splitlines()
+        steps_at = lines.index("    steps:", lines.index("  cycle:"))
+        first_step = next(line for line in lines[steps_at + 1:] if line.startswith("      - "))
+        self.assertEqual(first_step, "      - name: Enforce emergency stop")
+
     def test_restore_is_provenance_bound_and_fail_closed(self):
         self.assertIn("status=completed&per_page=100", self.source)
         self.assertIn("gh api --paginate --slurp", self.source)

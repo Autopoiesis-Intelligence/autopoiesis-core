@@ -132,6 +132,17 @@ class ScheduledStateSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_emergency_stop_job_history([{"jobs": []}])
 
+    def test_emergency_stop_rejects_a_step_that_ran_before_the_guard(self):
+        # Only the runner's "Set up job" may precede the guard; anything else could have changed state.
+        steps = [{"name": "Set up job", "conclusion": "success"},
+                 {"name": "Write state early", "conclusion": "success"},
+                 {"name": "Enforce emergency stop", "conclusion": "failure"},
+                 {"name": "Run actions/checkout@v4", "conclusion": "skipped"},
+                 {"name": "Complete job", "conclusion": "success"}]
+        history = [{"jobs": [{"name": "cycle", "status": "completed", "conclusion": "failure", "steps": steps}]}]
+        with self.assertRaisesRegex(ValueError, "first workflow step"):
+            validate_emergency_stop_job_history(history)
+
     def test_bootstrap_refused_after_failed_only_history(self):
         pages = [{"workflow_runs": [run(11, 11, conclusion="failure")]}]
         with self.assertRaisesRegex(ValueError, "unresolved prior cycle"):

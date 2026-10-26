@@ -43,6 +43,9 @@ def validate_emergency_stop_job_history(payload: Any) -> bool:
     if names.count(guard_name) != 1 or names.count(checkout_name) != 1:
         raise ValueError("emergency-stop guard or checkout step is missing or duplicated")
     guard_index = names.index(guard_name)
+    # Anything that ran before the guard could have changed state, so only the runner's setup may precede it.
+    if names[:guard_index] != ["Set up job"]:
+        raise ValueError("emergency-stop guard is not the first workflow step")
     checkout_index = names.index(checkout_name)
     if checkout_index <= guard_index:
         raise ValueError("checkout appears before the emergency-stop guard")
