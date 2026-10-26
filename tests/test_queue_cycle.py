@@ -246,6 +246,42 @@ class BoundedQueueCycleTests(unittest.TestCase):
             for event in queue["history"]
         ))
 
+    def test_source_mutation_after_coordinator_pass_never_reaches_done(self):
+        package_root = Path(self.temp.name) / "autopoesis"
+        package_root.mkdir()
+        source_file = package_root / "sample.py"
+        source_file.write_text("VALUE = 1\n", encoding="utf-8")
+        original_record = queue_cycle.record_verification_file
+
+        def record_then_mutate(path, task_id, status, verifier, **kwargs):
+            result = original_record(path, task_id, status, verifier, **kwargs)
+            if verifier == "BOUNDED_SANDBOX_TEST_WITH_SOURCE_DIGEST" and status == "PASS":
+                source_file.write_text("VALUE = 2\n", encoding="utf-8")
+            return result
+
+        with (
+            mock.patch.object(queue_cycle, "ROOT", Path(self.temp.name)),
+            mock.patch.object(
+                queue_cycle, "execute_task",
+                side_effect=lambda task, path: self._fixture_handler(task, path, "PASS"),
+            ),
+            mock.patch.object(queue_cycle, "record_verification_file", side_effect=record_then_mutate),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertNotEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["status"], "RETRYABLE_FAILURE")
+        self.assertIn("changed after PASS evidence", result["reason"])
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "OPEN")
+        self.assertFalse(any(
+            event.get("event") == "STATUS_CHANGED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("to") == "DONE"
+            for event in queue["history"]
+        ))
+
     def test_real_executor_sandbox_cycle_completes_with_bound_evidence(self):
         # Integration path: do not mock execute_task. The real executor creates
         # a temporary package copy, runs the generated import test, and records
