@@ -95,6 +95,15 @@ class WorkflowFaultGateWiringTests(unittest.TestCase):
         self.assertNotIn('missing_queue_manifest', workflow)
 
 
+    def test_workflow_exposes_every_fault_and_asserts_its_canonical_label(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        input_block = workflow.split("      restore_fault:", 1)[1].split("\n  jobs:", 1)[0]
+        for fault, (label, _) in RESTORE_FAULT_GATES.items():
+            with self.subTest(fault=fault):
+                self.assertIn(f"          - {fault}\n", input_block)
+                self.assertIn(f"{fault}:{label}", workflow)
+
+
 class WorkflowPythonHeredocTests(unittest.TestCase):
     # Raise this when a step adds a heredoc, so none escapes the compile check.
     EXPECTED_HEREDOCS = 8
