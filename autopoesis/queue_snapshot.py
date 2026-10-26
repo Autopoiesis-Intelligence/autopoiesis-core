@@ -20,6 +20,11 @@ NEGATIVE_FAULT_TITLE_PREFIX = "Negative restore fault: "
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _is_first_attempt(value: Any) -> bool:
+    # Exact int: True == 1 and 1.0 == 1 would otherwise pass as the original attempt.
+    return type(value) is int and value == 1
+
+
 def _run_id_text(value: str | int) -> str:
     if isinstance(value, bool):
         raise ValueError("Source run ID must contain decimal digits")
@@ -190,7 +195,7 @@ def validate_restore_source_run(
     expected_id = _run_id_text(requested_run_id)
     if str(run.get("id", "")) != expected_id:
         raise ValueError("Source run ID does not match restore_run_id")
-    if run.get("run_attempt") != 1:
+    if not _is_first_attempt(run.get("run_attempt")):
         raise ValueError(
             "Source run must be the original attempt (run_attempt=1); "
             f"got {run.get('run_attempt')!r}"
@@ -334,7 +339,7 @@ def latest_source_run_id(
             f"Newest workflow_dispatch run {newest['id']} is a negative restore fault run; "
             "create a fresh successful seed snapshot before restoring"
         )
-    if newest.get("run_attempt") != 1:
+    if not _is_first_attempt(newest.get("run_attempt")):
         raise ValueError(
             f"No successful workflow_dispatch snapshot run: newest workflow_dispatch "
             f"snapshot run {newest['id']} must have run_attempt=1; "
