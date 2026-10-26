@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from autopoesis.queue_snapshot import (
+    MAX_ARCHIVE_BYTES,
     bind_source_artifact,
     create_queue_snapshot_manifest,
     install_validated_queue_snapshot,
@@ -366,6 +367,64 @@ class QueueSnapshotTests(unittest.TestCase):
         self.assertEqual(result["extracted_file_count"], 2)
         self.assertTrue((destination / "TASK_QUEUE.json").is_file())
         self.assertTrue((destination / "QUEUE_SNAPSHOT_MANIFEST.json").is_file())
+
+    def test_archive_rejects_excessive_archive_size_before_digest_or_extraction(self):
+        archive = self.root / "oversized-archive.zip"
+        # A sparse file exercises the pre-digest size guard without allocating
+        # or hashing a 32 MiB+ payload.
+        with archive.open("wb") as stream:
+            stream.seek(MAX_ARCHIVE_BYTES)
+            stream.write(b"x")
+        destination = self.root / "extracted"
+
+        with self.assertRaisesRegex(ValueError, "archive exceeds size limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest="sha256:" + "0" * 64
+            )
+
+        self.assertFalse(destination.exists())
+
+    def test_archive_rejects_excessive_member_count_before_extraction(self):
+        archive = self.root / "too-many-members.zip"
+        entries = [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+        ] + [(f"extra-{index}.txt", b"x") for index in range(99)]
+        digest = self.make_archive(archive, entries)
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "member count limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
+
+    def test_archive_rejects_excessive_member_size_before_extraction(self):
+        archive = self.root / "oversized-member.zip"
+        digest = self.make_archive(archive, [
+            ("TASK_QUEUE.json", b"{}"),
+            ("QUEUE_SNAPSHOT_MANIFEST.json", b"{}"),
+            ("large.bin", b"x" * (8 * 1024 * 1024 + 1)),
+        ])
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "member exceeds uncompressed size limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
+
+    def test_archive_rejects_excessive_compression_ratio_before_extraction(self):
+        archive = self.root / "high-ratio.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("TASK_QUEUE.json", b"{}")
+            bundle.writestr("QUEUE_SNAPSHOT_MANIFEST.json", b"{}")
+            bundle.writestr("repetitive.bin", b"x" * (1024 * 1024))
+        digest = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+        destination = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "compression ratio limit"):
+            verify_and_extract_artifact_archive(
+                archive, destination, expected_digest=digest
+            )
+        self.assertFalse(destination.exists())
 
     def test_archive_rejects_path_traversal_and_cleans_partial_output(self):
         archive = self.root / "unsafe.zip"
