@@ -411,5 +411,37 @@ class BoundedQueueCycleTests(unittest.TestCase):
         self.assertNotIn("CYCLE-001", [entry.get("id") for entry in result["deferred"]])
 
 
+    def test_command_line_runs_one_cycle_and_maps_the_outcome_to_an_exit_code(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with mock.patch.object(
+            queue_cycle, "execute_task",
+            side_effect=lambda task, path: self._fixture_handler(task, path, "FAIL"),
+        ), redirect_stdout(out):
+            code = queue_cycle.main(["--queue", str(self.queue_path)])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out.getvalue())["status"], "RETRYABLE_FAILURE")
+
+        out = io.StringIO()
+        with mock.patch.object(
+            queue_cycle, "execute_task",
+            side_effect=lambda task, path: self._fixture_handler(task, path, "PASS"),
+        ), redirect_stdout(out):
+            code = queue_cycle.main(["--queue", str(self.queue_path)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["status"], "COMPLETED")
+
+        before = self.queue_path.read_bytes()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = queue_cycle.main(["--queue", str(self.queue_path)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["status"], "NO_WORK")
+        self.assertEqual(self.queue_path.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

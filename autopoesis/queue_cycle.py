@@ -5,6 +5,9 @@ It does not run a daemon, invoke arbitrary commands, or claim work it cannot ver
 """
 from __future__ import annotations
 
+import argparse
+import json
+
 from autopoesis.executor import source_tree_digest as executor_source_tree_digest
 from pathlib import Path
 from typing import Any
@@ -248,3 +251,20 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
             "reason": f"{type(exc).__name__}: {exc}",
             "reopened": reopened,
         }
+
+
+# A completed task or an empty queue is a normal cycle; anything else needs attention.
+EXIT_CODES = {"COMPLETED": 0, "NO_WORK": 0, "RETRYABLE_FAILURE": 2, "REJECTED": 2, "RECOVERY_REQUIRED": 3}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run one bounded queue cycle and print its outcome as JSON.")
+    parser.add_argument("--queue", type=Path, default=Path("TASK_QUEUE.json"))
+    args = parser.parse_args(argv)
+    result = run_one_queue_cycle(args.queue)
+    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    return EXIT_CODES.get(result.get("status"), 3)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
