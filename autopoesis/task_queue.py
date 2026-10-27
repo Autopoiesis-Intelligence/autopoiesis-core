@@ -272,6 +272,7 @@ def load_queue(path: Path) -> dict[str, Any]:
     replayed_attempts: dict[str, int] = {}
     replayed_lease: dict[str, str | None] = {}
     latest_verification: dict[str, str | None] = {}
+    latest_verification_revision: dict[str, str | None] = {}
     for event in queue["history"]:
         task_id = event.get("task_id")
         if event.get("event") == "VERIFICATION_RECORDED":
@@ -293,6 +294,11 @@ def load_queue(path: Path) -> dict[str, Any]:
                 and event["lease_sha256"] == replayed_lease.get(task_id)
             )
             latest_verification[task_id] = event["verification_status"] if bound else None
+            latest_verification_revision[task_id] = (
+                event.get("revision")
+                if bound and event["verification_status"] == "PASS"
+                else None
+            )
             continue
         if event.get("event") != "STATUS_CHANGED":
             continue
@@ -310,10 +316,20 @@ def load_queue(path: Path) -> dict[str, Any]:
                 )
             replayed_attempts[task_id] = replayed_attempts.get(task_id, 0) + 1
             latest_verification[task_id] = None
-        if event["to"] == "DONE" and latest_verification.get(task_id) != "PASS":
-            raise EvolutionError(
-                f"Queue history completes task {task_id!r} without a PASS for its source in that attempt"
-            )
+            latest_verification_revision[task_id] = None
+        if event["to"] == "DONE":
+            if latest_verification.get(task_id) != "PASS":
+                raise EvolutionError(
+                    f"Queue history completes task {task_id!r} without a PASS for its source in that attempt"
+                )
+            if (
+                event.get("revision_semantics") != "tested_source_snapshot_sha256"
+                or not _is_digest(event.get("revision"))
+                or event.get("revision") != latest_verification_revision.get(task_id)
+            ):
+                raise EvolutionError(
+                    f"Queue history DONE revision for task {task_id!r} does not match its bound PASS revision"
+                )
         previous_destination = latest_status.get(task_id)
         if previous_destination is not None and event["from"] != previous_destination:
             raise EvolutionError(
@@ -464,8 +480,9 @@ def advance_task(
     Entering SELECTED grants a lease to `owner`; every later change of an
     active item needs that lease's unexpired `token`. Repeating the current
     status is a no-op, but on an active item it still needs a valid token.
-    DONE also needs `revision`, the digest of the code as it is now; a PASS
-    recorded for other code does not count.
+    DONE also needs `revision`, the digest of the exact source snapshot named
+    by a PASS verification under the current lease. Callers must not describe
+    this as proof that a mutable live source tree is unchanged at finalization.
     """
     if not isinstance(status, str) or status not in QUEUE_STATUSES:
         raise EvolutionError(f"Unsupported queue status: {status!r}")
@@ -506,6 +523,12 @@ def advance_task(
     updated = _apply_transition(queue, task_id, status, note)
     if status == "SELECTED":
         updated["history"][-1]["lease_sha256"] = _lease_fingerprint(lease["token"])
+    if status == "DONE":
+        # Persist the exact revision that satisfied the PASS gate on the DONE
+        # transition itself; a separate PASS event alone is not enough to make
+        # the terminal status self-describing.
+        updated["history"][-1]["revision"] = revision
+        updated["history"][-1]["revision_semantics"] = "tested_source_snapshot_sha256"
     target = next(entry for entry in updated["items"] if entry["id"] == task_id)
     if status in ACTIVE_STATUSES:
         target["lease"] = lease
@@ -645,8 +668,9 @@ def record_verification_file(
     number captured before verification started, and be recorded by the holder
     of its current, unexpired lease. It is refused unless that exact attempt is
     still IN_PROGRESS, so a late result cannot count for a retry.
-    ``revision`` is the digest of the code that was tested; DONE compares it
-    with the code as it is when the task completes.
+    ``revision`` is the digest of the source snapshot that was tested; DONE
+    requires a matching PASS digest under the current lease. This queue layer
+    does not itself prove that the live source tree remains unchanged.
     """
     if not isinstance(task_id, str) or not task_id.strip():
         raise EvolutionError("Verification task_id must be a non-empty string")

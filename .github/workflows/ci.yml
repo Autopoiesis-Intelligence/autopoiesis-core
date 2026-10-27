@@ -177,6 +177,7 @@ jobs:
           )
           PY
       - name: Download and verify prior queue snapshot archive
+        id: archive_verification
         if: ${{ inputs.restore_run_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -211,11 +212,35 @@ jobs:
                   with archive.open("ab") as damaged:
                       damaged.write(b"tampered")
                   print("Injected archive-byte tampering before digest verification.")
-              result = verify_and_extract_artifact_archive(
-                  archive,
-                  Path(".queue-restore"),
-                  expected_digest=provenance.get("source_artifact_digest"),
-              )
+              try:
+                  result = verify_and_extract_artifact_archive(
+                      archive,
+                      Path(".queue-restore"),
+                      expected_digest=provenance.get("source_artifact_digest"),
+                  )
+              except ValueError as exc:
+                  expected_message = (
+                      "Downloaded artifact archive SHA-256 does not match source metadata"
+                  )
+                  if (
+                      os.environ.get("RESTORE_FAULT") == "tamper_archive"
+                      and str(exc) == expected_message
+                  ):
+                      output_path = os.environ.get("GITHUB_OUTPUT")
+                      if not output_path:
+                          raise SystemExit(
+                              "Expected archive digest mismatch, but GITHUB_OUTPUT is unavailable"
+                          ) from exc
+                      with open(output_path, "a", encoding="utf-8") as output:
+                          output.write("expected_gate=archive_digest_mismatch\n")
+                      print(
+                          "EXPECTED_NEGATIVE_GATE=archive_digest_mismatch: "
+                          "tampered archive rejected by source SHA-256 check."
+                      )
+                      raise SystemExit(
+                          "Expected negative test: archive digest mismatch was confirmed"
+                      ) from exc
+                  raise
               print(
                   "Downloaded artifact archive verified before extraction: "
                   f"{result['archive_sha256']}; "
@@ -230,63 +255,59 @@ jobs:
           RESTORE_FAULT: ${{ inputs.restore_fault }}
         run: |
           python - <<'PY'
-          import hashlib
-          import json
           import os
           from pathlib import Path
+          from autopoesis.restore_fault_gates import inject_restore_fault
 
           fault = os.environ["RESTORE_FAULT"]
           snapshot = Path(".queue-restore/TASK_QUEUE.json")
           manifest_path = Path(".queue-restore/QUEUE_SNAPSHOT_MANIFEST.json")
-
-          def rebind(data):
-              # Keep the manifest consistent so the queue loader, not the hash check, must reject it.
-              snapshot.write_bytes(data)
-              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-              manifest["task_queue_sha256"] = hashlib.sha256(data).hexdigest()
-              manifest["task_queue_size_bytes"] = len(data)
-              manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-          if fault == "tamper_bytes":
-              snapshot.write_bytes(snapshot.read_bytes() + b" ")
-          elif fault == "corrupt_json":
-              rebind(b'{"version": 1, "items": [')
-          elif fault == "bad_version":
-              queue = json.loads(snapshot.read_text(encoding="utf-8"))
-              queue["version"] = 2
-              rebind(json.dumps(queue).encode("utf-8"))
-          elif fault == "bad_history":
-              queue = json.loads(snapshot.read_text(encoding="utf-8"))
-              queue["history"].append({"event": "UNKNOWN_EVENT", "task_id": "CI-RESTORE-DONE-PROBE"})
-              rebind(json.dumps(queue).encode("utf-8"))
-          elif fault == "drop_queue":
-              snapshot.unlink()
-          elif fault == "drop_manifest":
-              manifest_path.unlink()
-          else:
-              raise SystemExit(f"Unknown restore_fault {fault!r}")
-          print(f"Injected restore fault {fault!r} into the downloaded snapshot.")
+          inject_restore_fault(fault, snapshot, manifest_path)
+          print(f"Injected restore fault {fault!r} using the tested helper.")
           PY
       - name: Validate and install prior queue snapshot
+        id: restore_validation
         if: ${{ inputs.restore_run_id != '' }}
+        env:
+          RESTORE_FAULT: ${{ inputs.restore_fault }}
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           from autopoesis.queue_snapshot import install_validated_queue_snapshot, validate_queue_snapshot
+          from autopoesis.restore_fault_gates import expected_gate_label, matched_gate
           from autopoesis.task_queue import load_queue
 
           snapshot = Path(".queue-restore/TASK_QUEUE.json")
           manifest_path = Path(".queue-restore/QUEUE_SNAPSHOT_MANIFEST.json")
           provenance_path = Path("QUEUE_RESTORE_PROVENANCE.json")
           provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-          validation = validate_queue_snapshot(
-              snapshot,
-              manifest_path,
-              source_run_id=provenance.get("source_run_id"),
-              source_head_sha=provenance.get("source_head_sha"),
-              source_repository=provenance.get("source_repository"),
-          )
+          fault = os.environ.get("RESTORE_FAULT", "")
+
+          try:
+              validation = validate_queue_snapshot(
+                  snapshot,
+                  manifest_path,
+                  source_run_id=provenance.get("source_run_id"),
+                  source_head_sha=provenance.get("source_head_sha"),
+                  source_repository=provenance.get("source_repository"),
+              )
+          except Exception as exc:
+              label = matched_gate(fault, exc)
+              if label is not None and label == expected_gate_label(fault):
+                  message = str(exc)
+                  with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                      output.write(f"expected_gate={label}\n")
+                  print(f"EXPECTED_NEGATIVE_GATE={label}: {message}")
+                  raise SystemExit(f"Expected negative restore gate confirmed: {label}") from exc
+              raise
+
+          if fault in {"tamper_bytes", "corrupt_json", "bad_version", "bad_history", "drop_queue", "drop_manifest"}:
+              raise SystemExit(
+                  f"Restore fault {fault!r} was not rejected at its expected validation gate"
+              )
+
           restored = Path("TASK_QUEUE.json")
           install_validated_queue_snapshot(
               snapshot,
@@ -311,18 +332,79 @@ jobs:
               f"queue SHA-256 {provenance['restored_queue_sha256']}."
           )
           PY
-      - name: Fail if an injected restore fault was not rejected
-        if: ${{ inputs.restore_run_id != '' && inputs.restore_fault != '' && inputs.restore_fault != 'none' }}
+      - name: Assert injected restore fault failed at its expected validation gate
+        if: ${{ always() && inputs.restore_run_id != '' && inputs.restore_fault != '' && inputs.restore_fault != 'none' && inputs.restore_fault != 'tamper_archive' }}
+        env:
+          RESTORE_FAULT: ${{ inputs.restore_fault }}
+          EXPECTED_GATE: ${{ steps.restore_validation.outputs.expected_gate }}
         run: |
-          echo "Injected restore fault '${{ inputs.restore_fault }}' was NOT rejected by snapshot validation." >&2
-          exit 1
+          case "$RESTORE_FAULT:$EXPECTED_GATE" in
+            tamper_bytes:queue_digest_mismatch|corrupt_json:queue_json_unreadable|bad_version:unsupported_queue_version|bad_history:unsupported_history_event|drop_queue:queue_snapshot_missing|drop_manifest:queue_manifest_missing)
+              echo "Confirmed expected restore rejection: $RESTORE_FAULT -> $EXPECTED_GATE"
+              ;;
+            *)
+              echo "Restore fault did not prove its intended validation gate: fault='$RESTORE_FAULT' gate='$EXPECTED_GATE'." >&2
+              exit 1
+              ;;
+          esac
+      - name: Assert tamper_archive failed at the expected digest gate
+        if: ${{ always() && inputs.restore_run_id != '' && inputs.restore_fault == 'tamper_archive' }}
+        env:
+          EXPECTED_GATE: ${{ steps.archive_verification.outputs.expected_gate }}
+        run: |
+          if [[ "$EXPECTED_GATE" != "archive_digest_mismatch" ]]; then
+            echo "tamper_archive did not prove rejection at the archive digest gate; got '$EXPECTED_GATE'." >&2
+            exit 1
+          fi
+          echo "Confirmed tamper_archive rejection at the archive digest gate."
       - name: Validate workflow YAML syntax
         run: |
           ruby -e 'require "yaml"; files = Dir.glob(".github/workflows/*.{yml,yaml}").sort; abort "No workflow files found" if files.empty?; files.each { |f| YAML.load_file(f, aliases: true); puts "Parsed #{f}" }'
-      - name: Check shell syntax of every workflow run step
+      - name: Check shell syntax and embedded Python in workflow run steps
         run: |
-          # Restore and probe steps run only on dispatch, so a syntax error there passes PR CI unseen.
-          ruby -e 'require "yaml"; require "tempfile"; bad = 0; Dir.glob(".github/workflows/*.{yml,yaml}").sort.each { |f| (YAML.load_file(f, aliases: true)["jobs"] || {}).each { |job, spec| (spec["steps"] || []).each { |step| next unless step["run"]; Tempfile.create("step") { |t| t.write(step["run"]); t.flush; out = IO.popen(["bash", "-n", t.path], err: [:child, :out], &:read); unless $?.success? && out.empty?; warn out; bad += 1; warn "Shell syntax error: #{f} job #{job} step #{step["name"].inspect}"; end } } } }; abort "#{bad} step(s) with shell syntax errors" if bad > 0; puts "All run steps pass bash -n."'
+          ruby <<'RUBY'
+          require "yaml"
+          require "tempfile"
+          require "open3"
+
+          files = Dir.glob(".github/workflows/*.{yml,yaml}").sort
+          bad = 0
+          python_blocks = 0
+          files.each do |file|
+            workflow = YAML.load_file(file, aliases: true)
+            (workflow["jobs"] || {}).each do |job_name, job|
+              (job["steps"] || []).each do |step|
+                next unless step["run"]
+                Tempfile.create(["workflow-step-", ".sh"]) do |shell|
+                  shell.write(step["run"])
+                  shell.flush
+                  stdout, stderr, status = Open3.capture3("bash", "-n", shell.path)
+                  unless status.success? && stdout.empty? && stderr.empty?
+                    warn(stdout + stderr)
+                    warn("Shell syntax error: #{file} job #{job_name} step #{step["name"].inspect}")
+                    bad += 1
+                  end
+                end
+                step["run"].scan(/(?:\A|\n)[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=\$\()?python[ \t]+-[ \t]+<<['"]?PY['"]?[ \t]*\n(.*?)^[ \t]*PY[ \t]*$/m) do |match|
+                  python_blocks += 1
+                  Tempfile.create(["workflow-python-", ".py"]) do |python|
+                    python.write(match[0])
+                    python.flush
+                    stdout, stderr, status = Open3.capture3("python", "-m", "py_compile", python.path)
+                    unless status.success?
+                      warn(stdout + stderr)
+                      warn("Embedded Python syntax error: #{file} job #{job_name} step #{step["name"].inspect}")
+                      bad += 1
+                    end
+                  end
+                end
+              end
+            end
+          end
+          abort "Expected 8 embedded Python heredocs, found #{python_blocks}" unless python_blocks == 8
+          abort "#{bad} workflow run step(s) failed syntax checks" if bad > 0
+          puts "All workflow shell steps and #{python_blocks} embedded Python heredocs pass syntax checks."
+          RUBY
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Run file-based tasks
