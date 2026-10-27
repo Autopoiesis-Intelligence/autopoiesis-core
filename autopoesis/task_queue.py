@@ -260,6 +260,18 @@ def record_outcome(queue: dict[str, Any], task_id: str, status: str, note: str =
     attempts = item.get("attempts", 0)
     if type(attempts) is not int or attempts < 0:
         raise EvolutionError(f"Invalid attempts count for queued task {task_id!r}")
+    if status == "DONE":
+        verification_events = [
+            event for event in updated.get("history", [])
+            if isinstance(event, dict)
+            and event.get("event") == "VERIFICATION_RECORDED"
+            and event.get("task_id") == task_id
+        ]
+        if not verification_events or verification_events[-1].get("verification_status") != "PASS":
+            raise EvolutionError(
+                f"Cannot mark task {task_id!r} DONE without a matching latest PASS verification"
+            )
+
     item["status"] = status
     if status == "IN_PROGRESS":
         item["attempts"] = attempts + 1
