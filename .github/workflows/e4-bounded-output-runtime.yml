@@ -65,3 +65,32 @@ jobs:
           test "$running" = "false"
           docker rm "$container_id" >/dev/null
           echo "runtime_result=container_output_capped_and_process_exited"
+
+      - name: Verify collector truncates oversized input and requests container stop
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/collector-overflow-probe"
+          mkdir -p "$probe/bin"
+          printf 'test-container-id\n' > "$probe/container.id"
+          head -c 1048577 /dev/zero > "$probe/oversized.bin"
+          cat > "$probe/bin/docker" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          printf '%s\n' "$*" >> "$DOCKER_CALL_LOG"
+          [[ "$#" -eq 2 && "$1" == "kill" && "$2" == "test-container-id" ]]
+          SH
+          chmod +x "$probe/bin/docker"
+          export DOCKER_CALL_LOG="$probe/docker-call.log"
+          set +e
+          PATH="$probe/bin:$PATH" python scripts/capture_bounded_output.py "$probe/captured.bin" --max-bytes 1048576 --container-id-file "$probe/container.id" < "$probe/oversized.bin"
+          status=$?
+          set -e
+          bytes="$(wc -c < "$probe/captured.bin")"
+          echo "collector_exit=$status"
+          echo "collector_captured_bytes=$bytes"
+          echo "stop_request=$(cat "$probe/docker-call.log")"
+          test "$status" -eq 125
+          test "$bytes" -eq 1048576
+          grep -Fxq 'kill test-container-id' "$probe/docker-call.log"
+          echo "collector_result=bounded_and_stop_requested"
