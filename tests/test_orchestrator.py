@@ -204,6 +204,32 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result["recovered"], ["TASK-1"])
         self.assertEqual((result["status"], result["final"]), ("COMPLETED", "DONE"))
 
+    def test_lease_that_expires_while_the_task_runs_never_reaches_done(self):
+        # Nobody takes the task over: the lease only runs out while the handler works.
+        update_queue_file(self.path, [task()])
+
+        def outlive_lease(item, root):
+            result = passing(item, root)
+            with queue_write_lock(self.path):
+                queue = json.loads(self.path.read_text(encoding="utf-8"))
+                queue["items"][0]["lease"]["expires_at"] = (
+                    datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+                self.path.write_text(json.dumps(queue), encoding="utf-8")
+            return result
+
+        result = run_cycle(self.path, "runner", self.repo, handlers={"verify_test_scaffold": outlive_lease})
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
+        self.assertIn("STALE_LEASE", result["reason"])
+        self.assertEqual((self.item()["status"], self.item()["lease"]["owner"]), ("IN_PROGRESS", "runner"))
+        self.assertFalse(self.events("VERIFICATION_RECORDED"))
+        self.assertFalse([e for e in self.events("STATUS_CHANGED") if e["to"] == "DONE"])
+
+        follow_up = run_cycle(self.path, "runner", self.repo, handlers={"verify_test_scaffold": passing})
+        self.assertEqual((follow_up["recovered"], follow_up["status"], follow_up["attempt"]),
+                         (["TASK-1"], "COMPLETED", 2))
+        self.assertEqual((self.item()["status"], self.item()["attempts"]), ("DONE", 2))
+        self.assertEqual(len(self.events("VERIFICATION_RECORDED")), 1)
+
     def test_stale_worker_cannot_record_or_complete_after_reassignment(self):
         update_queue_file(self.path, [task()])
         later = datetime.now(timezone.utc) + LEASE_TTL + timedelta(hours=1)

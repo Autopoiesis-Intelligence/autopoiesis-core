@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "autopoesis/core.py"
 # Written by the version 2 code of bbf6a44: T1 DONE, T2 IN_PROGRESS with a PASS and no DONE.
 V2_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "queue_v2_done_from_bbf6a44.json"
+V1_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "queue_v1_done_from_ba65d04.json"
 COMMIT_A = "a" * 40
 COMMIT_B = "b" * 40
 TREE_A = "c" * 40
@@ -160,6 +161,55 @@ class MigrationCommitBindingTests(unittest.TestCase):
         self.path.write_text(json.dumps(queue), encoding="utf-8")
         with self.assertRaisesRegex(EvolutionError, "does not match its bound PASS"):
             load_queue(self.path)
+
+    def test_a_commit_bound_done_inside_the_legacy_boundary_is_refused(self):
+        migrate_queue_file(self.path)
+        token = next(i for i in load_queue(self.path)["items"] if i["id"] == "T2")["lease"]["token"]
+        record_verification_file(self.path, "T2", "PASS", "unit", None, SOURCE, current_attempt(self.path, "T2"),
+                                 None, token, commit_sha=COMMIT_A, tree_sha=TREE_A)
+        advance_task_file(self.path, "T2", "DONE", "done", token=token, commit_sha=COMMIT_A, tree_sha=TREE_A)
+        self.assertEqual(load_queue(self.path)["items"][1]["status"], "DONE")
+        queue = json.loads(self.path.read_text(encoding="utf-8"))
+        # Moving the boundary past the new DONE would make it legacy, and it carries no legacy revision.
+        queue["legacy_history_length"] = len(queue["history"])
+        self.path.write_text(json.dumps(queue), encoding="utf-8")
+        with self.assertRaisesRegex(EvolutionError, "does not match its bound PASS"):
+            load_queue(self.path)
+
+    def test_malformed_legacy_boundary_is_refused(self):
+        migrate_queue_file(self.path)
+        queue = json.loads(self.path.read_text(encoding="utf-8"))
+        for value in (-1, len(queue["history"]) + 1, True, "3", 1.0, None):
+            with self.subTest(value=value):
+                self.path.write_text(json.dumps({**queue, "legacy_history_length": value}), encoding="utf-8")
+                with self.assertRaisesRegex(EvolutionError, "legacy_history_length"):
+                    load_queue(self.path)
+        source = json.loads(self.original)
+        self.path.write_text(json.dumps({**source, "legacy_history_length": 0}), encoding="utf-8")
+        with self.assertRaisesRegex(EvolutionError, "legacy_history_length"):
+            migrate_queue_file(self.path)
+
+    def test_reordering_history_across_the_boundary_fails_closed(self):
+        # merge_candidates sorts history by time. With a clock behind the recorded events, a new
+        # candidate sorts into the legacy prefix and pushes the last legacy event, here a DONE, out.
+        v1 = json.loads(V1_FIXTURE.read_text(encoding="utf-8"))
+        for event in v1["history"]:
+            event["at"] = "2999" + event["at"][4:]
+        self.assertEqual(v1["history"][-1]["to"], "DONE")
+        self.path.write_text(json.dumps(v1), encoding="utf-8")
+        migrate_queue_file(self.path)
+        update_queue_file(self.path, [candidate("T9")])
+        with self.assertRaisesRegex(EvolutionError, "does not match its bound PASS"):
+            load_queue(self.path)
+
+    def test_merging_candidates_after_migration_keeps_the_boundary(self):
+        migrate_queue_file(self.path)
+        before = load_queue(self.path)
+        update_queue_file(self.path, [candidate("T9")])
+        after = load_queue(self.path)
+        boundary = before["legacy_history_length"]
+        self.assertEqual(after["legacy_history_length"], boundary)
+        self.assertEqual(after["history"][:boundary], before["history"][:boundary])
 
     # 12
     def test_migrating_a_version_3_queue_changes_nothing(self):
