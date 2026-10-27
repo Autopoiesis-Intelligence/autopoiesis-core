@@ -46,10 +46,7 @@ class BoundedOutputCaptureTests(unittest.TestCase):
             bin_dir.mkdir()
             marker = root / "docker-kill-args.txt"
             fake_docker = bin_dir / "docker"
-            fake_docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_KILL_MARKER\"\nexit 0\n",
-                encoding="utf-8",
-            )
+            fake_docker.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_KILL_MARKER\"\nexit 0\n", encoding="utf-8")
             fake_docker.chmod(0o755)
             env = dict(__import__("os").environ)
             env["PATH"] = str(bin_dir) + __import__("os").pathsep + env.get("PATH", "")
@@ -91,7 +88,7 @@ class BoundedOutputCaptureTests(unittest.TestCase):
             bin_dir = root / "bin"
             bin_dir.mkdir()
             fake_docker = bin_dir / "docker"
-            fake_docker.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+            fake_docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             fake_docker.chmod(0o755)
             import os
             env = dict(os.environ)
