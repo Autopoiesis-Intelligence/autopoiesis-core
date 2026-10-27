@@ -66,6 +66,41 @@ jobs:
           docker rm "$container_id" >/dev/null
           echo "runtime_result=container_output_capped_and_process_exited"
 
+      - name: Verify real collector overflow stops a live Docker container
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/real-overflow-probe"
+          mkdir -p "$probe"
+          cidfile="$probe/container.id"
+          output="$probe/captured.bin"
+          rm -f "$cidfile" "$output"
+          docker pull --quiet "$TEST_IMAGE"
+          set +e
+          docker run --cidfile "$cidfile" --network none --read-only \
+            --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
+            --cpus 0.5 --memory 128m --memory-swap 128m --pids-limit 32 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            "$TEST_IMAGE" python -c 'import os; chunk=b"Z"*65536; exec("while True:\\n os.write(1, chunk)")' \
+            | python scripts/capture_bounded_output.py "$output" --max-bytes "$OUTPUT_LIMIT" --container-id-file "$cidfile"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          docker_status="${statuses[0]}"
+          collector_status="${statuses[1]}"
+          test -s "$cidfile"
+          container_id="$(cat "$cidfile")"
+          bytes="$(wc -c < "$output")"
+          running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
+          echo "docker_exit=$docker_status"
+          echo "collector_exit=$collector_status"
+          echo "captured_bytes=$bytes"
+          echo "container_running_after_overflow=$running"
+          test "$collector_status" -eq 125
+          test "$bytes" -eq "$OUTPUT_LIMIT"
+          test "$running" = "false"
+          docker rm "$container_id" >/dev/null
+          echo "runtime_result=real_collector_overflow_stopped_live_container"
+
       - name: Verify collector truncates oversized input and requests container stop
         shell: bash
         run: |
