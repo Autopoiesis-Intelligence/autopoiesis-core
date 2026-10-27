@@ -252,24 +252,7 @@ jobs:
           timeout --signal=TERM --kill-after=5s 120s docker run --rm --network none --read-only --tmpfs /tmp --user 65534:65534 \
             --cap-drop ALL --security-opt no-new-privileges -e PYTHONDONTWRITEBYTECODE=1 \
             -v "$sandbox":/work:ro -w /work "$TEST_IMAGE" \
-            python -m unittest -v "$module" 2>&1 | python -c '
-          import sys
-          limit = 1024 * 1024
-          total = 0
-          with open(sys.argv[1], "wb") as output:
-              while True:
-                  chunk = sys.stdin.buffer.read(8192)
-                  if not chunk:
-                      break
-                  remaining = limit - total
-                  if remaining > 0:
-                      output.write(chunk[:remaining])
-                      total += min(len(chunk), remaining)
-                  if len(chunk) > remaining:
-                      print("ERROR: generated test output exceeded 1 MiB; terminating pipeline", file=sys.stderr)
-                      sys.exit(125)
-          print(f"Captured {total} output bytes (limit {limit})", file=sys.stderr)
-          ' "$RUNNER_TEMP/test-output.txt"
+            python -m unittest -v "$module" 2>&1 | python scripts/capture_bounded_output.py "$RUNNER_TEMP/test-output.txt" --max-bytes 1048576
           pipeline_status=(${PIPESTATUS[@]})
           test_status=${pipeline_status[0]}
           capture_status=${pipeline_status[1]}
