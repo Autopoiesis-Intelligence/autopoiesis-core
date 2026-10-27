@@ -183,6 +183,11 @@ def _validate_history(history: list[Any]) -> None:
                 raise EvolutionError(f"{prefix}: note must be a string")
             if "lease_sha256" in event and not _is_digest(event["lease_sha256"]):
                 raise EvolutionError(f"{prefix}: lease_sha256 must be a lowercase SHA-256 hex digest")
+            if event["to"] == "DONE":
+                if not _is_digest(event.get("revision")):
+                    raise EvolutionError(f"{prefix}: DONE revision must be a lowercase SHA-256 hex digest")
+                if event.get("revision_semantics") != "tested_source_snapshot_sha256":
+                    raise EvolutionError(f"{prefix}: DONE revision_semantics must be 'tested_source_snapshot_sha256'")
         if event_type == "VERIFICATION_RECORDED":
             verification_status = event.get("verification_status")
             if not isinstance(verification_status, str) or verification_status not in {"PASS", "FAIL"}:
@@ -272,6 +277,7 @@ def load_queue(path: Path) -> dict[str, Any]:
     replayed_attempts: dict[str, int] = {}
     replayed_lease: dict[str, str | None] = {}
     latest_verification: dict[str, str | None] = {}
+    latest_verification_revision: dict[str, str | None] = {}
     for event in queue["history"]:
         task_id = event.get("task_id")
         if event.get("event") == "VERIFICATION_RECORDED":
@@ -293,6 +299,11 @@ def load_queue(path: Path) -> dict[str, Any]:
                 and event["lease_sha256"] == replayed_lease.get(task_id)
             )
             latest_verification[task_id] = event["verification_status"] if bound else None
+            latest_verification_revision[task_id] = (
+                event.get("revision")
+                if bound and event["verification_status"] == "PASS"
+                else None
+            )
             continue
         if event.get("event") != "STATUS_CHANGED":
             continue
@@ -310,10 +321,20 @@ def load_queue(path: Path) -> dict[str, Any]:
                 )
             replayed_attempts[task_id] = replayed_attempts.get(task_id, 0) + 1
             latest_verification[task_id] = None
-        if event["to"] == "DONE" and latest_verification.get(task_id) != "PASS":
-            raise EvolutionError(
-                f"Queue history completes task {task_id!r} without a PASS for its source in that attempt"
-            )
+            latest_verification_revision[task_id] = None
+        if event["to"] == "DONE":
+            if latest_verification.get(task_id) != "PASS":
+                raise EvolutionError(
+                    f"Queue history completes task {task_id!r} without a PASS for its source in that attempt"
+                )
+            if (
+                event.get("revision_semantics") != "tested_source_snapshot_sha256"
+                or not _is_digest(event.get("revision"))
+                or event.get("revision") != latest_verification_revision.get(task_id)
+            ):
+                raise EvolutionError(
+                    f"Queue history DONE revision for task {task_id!r} does not match its bound PASS revision"
+                )
         previous_destination = latest_status.get(task_id)
         if previous_destination is not None and event["from"] != previous_destination:
             raise EvolutionError(
