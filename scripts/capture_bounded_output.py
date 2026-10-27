@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Capture stdin to a file with a hard byte limit; exit 125 when exceeded."""
+"""Capture stdin to a file with a hard byte limit; exit 125 when exceeded.
+
+The caller closes the producer pipeline on overflow and supplies a container ID file
+so this trusted runner-side process can explicitly stop the untrusted test container.
+"""
 from __future__ import annotations
 
 import argparse
