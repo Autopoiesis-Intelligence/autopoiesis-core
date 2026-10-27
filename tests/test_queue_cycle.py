@@ -282,6 +282,79 @@ class BoundedQueueCycleTests(unittest.TestCase):
             for event in queue["history"]
         ))
 
+    def test_done_is_bound_to_tested_snapshot_if_live_tree_changes_after_final_digest(self):
+        package_root = Path(self.temp.name) / "autopoesis"
+        package_root.mkdir()
+        source_file = package_root / "sample.py"
+        source_file.write_text("VALUE = 1\\n", encoding="utf-8")
+        snapshot_digest = queue_cycle.source_tree_digest(package_root)
+        digest_calls = {"count": 0}
+
+        def digest_then_race(root):
+            digest_calls["count"] += 1
+            observed = queue_cycle.executor_source_tree_digest(root)
+            if digest_calls["count"] == 3:
+                # The final digest check returns the snapshot digest, then an
+                # external writer changes the live tree before DONE is written.
+                source_file.write_text("VALUE = 2\\n", encoding="utf-8")
+            return observed
+
+        def handler(task, path):
+            record_verification_file(
+                path,
+                task["queue_task_id"],
+                "PASS",
+                "UNIT_TEST_FIXTURE",
+                source=task["source"],
+                attempt=current_attempt(path, task["queue_task_id"]),
+                revision=snapshot_digest,
+                token=task["lease_token"],
+            )
+            return {
+                "id": task["id"],
+                "type": task["type"],
+                "status": "PASS",
+                "result": {
+                    "verification_status": "PASS",
+                    "source_tree_sha256": snapshot_digest,
+                },
+            }
+
+        with (
+            mock.patch.object(queue_cycle, "ROOT", Path(self.temp.name)),
+            mock.patch.object(queue_cycle, "source_tree_digest", side_effect=digest_then_race),
+            mock.patch.object(queue_cycle, "execute_task", side_effect=handler),
+        ):
+            result = run_one_queue_cycle(self.queue_path)
+
+        self.assertEqual(digest_calls["count"], 3)
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["revision"], snapshot_digest)
+        self.assertEqual(
+            result["revision_semantics"],
+            "SHA-256 of the exact copied source snapshot tested by the executor",
+        )
+        self.assertFalse(result["live_tree_immutability_proven"])
+        self.assertNotEqual(queue_cycle.executor_source_tree_digest(package_root), snapshot_digest)
+        queue = load_queue(self.queue_path)
+        item = next(item for item in queue["items"] if item["id"] == "CYCLE-001")
+        self.assertEqual(item["status"], "DONE")
+        done_event = next(
+            event for event in reversed(queue["history"])
+            if event.get("event") == "STATUS_CHANGED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("to") == "DONE"
+        )
+        self.assertEqual(done_event.get("revision"), snapshot_digest)
+        passing_events = [
+            event for event in queue["history"]
+            if event.get("event") == "VERIFICATION_RECORDED"
+            and event.get("task_id") == "CYCLE-001"
+            and event.get("verification_status") == "PASS"
+        ]
+        self.assertTrue(passing_events)
+        self.assertTrue(all(event.get("revision") == snapshot_digest for event in passing_events))
+
     def test_real_executor_sandbox_cycle_completes_with_bound_evidence(self):
         # Integration path: do not mock execute_task. The real executor creates
         # a temporary package copy, runs the generated import test, and records
