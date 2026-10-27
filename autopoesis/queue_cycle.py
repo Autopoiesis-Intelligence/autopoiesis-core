@@ -39,8 +39,9 @@ def run_one_queue_cycle(queue_path: Path) -> dict[str, Any]:
     RECOVERY_REQUIRED. The latter means the coordinator cannot confirm a safe
     persisted state and requires inspection; it is not a terminal task status.
     A failed attempt returns work to OPEN until MAX_ATTEMPTS, then REJECTED.
-    DONE is written only after the verifier's PASS evidence is recorded and
-    the tested source digest still matches.
+    DONE is bound to the digest of the exact source snapshot reported by the
+    executor. Live-tree comparisons remain fail-closed checks during the cycle,
+    but they cannot prove the live tree stayed unchanged after the last check.
     """
     # Recovery runs before selection, so its rejections belong in every outcome,
     # not only NO_WORK; the list fills in place and survives a later failure.
@@ -189,13 +190,13 @@ def _run_cycle(queue_path: Path, rejected_after_recovery: list[str]) -> dict[str
             "BOUNDED_SANDBOX_TEST_WITH_SOURCE_DIGEST",
             source=item["source"],
             attempt=attempt,
-            revision=current_revision,
+            revision=reported_revision,
             token=token,
         )
-        # Recompute after persisting coordinator PASS: the source tree may have
-        # changed between the earlier digest and this finalization boundary.
-        # This narrows the TOCTOU window; it cannot eliminate an external writer
-        # racing after this check unless the source tree is locked or immutable.
+        # Recompute after persisting coordinator PASS. A change observed here is
+        # still rejected, but a writer can race after this check. DONE therefore
+        # records the tested snapshot digest, not a claim that the live tree is
+        # immutable or still identical at the instant the status is persisted.
         final_revision = source_tree_digest(ROOT / "autopoesis")
         if final_revision != current_revision:
             terminal = attempt is not None and attempt >= MAX_ATTEMPTS
@@ -224,16 +225,18 @@ def _run_cycle(queue_path: Path, rejected_after_recovery: list[str]) -> dict[str
             queue_path,
             task_id,
             "DONE",
-            "bounded verifier PASS bound to current source, attempt and lease",
+            "bounded verifier PASS bound to tested source snapshot, attempt and lease",
             owner=OWNER,
             token=token,
-            revision=current_revision,
+            revision=reported_revision,
         )
         return {
             "status": "COMPLETED",
             "task_id": task_id,
             "verification_status": "PASS",
-            "revision": current_revision,
+            "revision": reported_revision,
+            "revision_semantics": "SHA-256 of the exact copied source snapshot tested by the executor",
+            "live_tree_immutability_proven": False,
             "execution": execution,
         }
     except Exception as exc:
