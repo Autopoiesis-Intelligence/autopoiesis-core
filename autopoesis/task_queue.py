@@ -122,6 +122,10 @@ def _validate_history(history: list[Any]) -> None:
             level = event.get("verification_level")
             if not isinstance(level, str) or not level.strip():
                 raise EvolutionError(f"{prefix}: verification_level must be a non-empty string")
+            if "attempt" in event and event["attempt"] is not None and (
+                type(event["attempt"]) is not int or event["attempt"] < 0
+            ):
+                raise EvolutionError(f"{prefix}: attempt must be a non-negative integer or null")
             artifact_hash = event.get("artifact_sha256")
             if artifact_hash is not None and (
                 not isinstance(artifact_hash, str)
@@ -260,6 +264,23 @@ def record_outcome(queue: dict[str, Any], task_id: str, status: str, note: str =
     attempts = item.get("attempts", 0)
     if type(attempts) is not int or attempts < 0:
         raise EvolutionError(f"Invalid attempts count for queued task {task_id!r}")
+    if status == "DONE":
+        verification_events = [
+            event for event in updated.get("history", [])
+            if isinstance(event, dict)
+            and event.get("event") == "VERIFICATION_RECORDED"
+            and event.get("task_id") == task_id
+        ]
+        if (
+            not verification_events
+            or verification_events[-1].get("verification_status") != "PASS"
+            or verification_events[-1].get("attempt") != attempts
+        ):
+            raise EvolutionError(
+                f"Cannot mark task {task_id!r} DONE without a matching latest PASS verification "
+                "for the current attempt"
+            )
+
     item["status"] = status
     if status == "IN_PROGRESS":
         item["attempts"] = attempts + 1
@@ -298,9 +319,18 @@ def record_verification_file(
 
     with queue_write_lock(path):
         queue = load_queue(path)
+        matches = [item for item in queue.get("items", []) if item.get("id") == task_id]
+        if len(matches) > 1:
+            raise EvolutionError(f"Expected at most one queued task with id {task_id!r}")
+        # Verification tasks can exist outside the queue. Keep those records informational:
+        # attempt=None means they cannot satisfy the queue's DONE guard.
+        attempts = matches[0].get("attempts", 0) if matches else None
+        if attempts is not None and (type(attempts) is not int or attempts < 0):
+            raise EvolutionError(f"Invalid attempts count for queued task {task_id!r}")
         event = {
             "event": "VERIFICATION_RECORDED",
             "task_id": task_id,
+            "attempt": attempts,
             "verification_status": verification_status,
             "verification_level": verification_level,
             "artifact_sha256": artifact_sha256,

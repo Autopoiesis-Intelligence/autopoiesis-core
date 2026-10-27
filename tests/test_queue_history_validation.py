@@ -173,7 +173,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
             }])
             record_verification_file(
                 path,
-                "CORE-007",
+                "TASK-1",
                 "PASS",
                 "GENERATED_TEST_EXECUTION",
                 "a" * 64,
@@ -217,7 +217,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
                 "description": "test",
             }])
             with self.assertRaisesRegex(EvolutionError, "Unsupported verification status"):
-                record_verification_file(path, "CORE-007", ["PASS"], "GENERATED_TEST_EXECUTION")
+                record_verification_file(path, "TASK-1", ["PASS"], "GENERATED_TEST_EXECUTION")
             with self.assertRaisesRegex(EvolutionError, "Unsupported queue status"):
                 record_outcome_file(path, "TASK-1", ["DONE"], "invalid status type")
 
@@ -229,17 +229,84 @@ class QueueHistoryValidationTests(unittest.TestCase):
                 "type": "proposal",
                 "description": "test",
             }])
+            with self.assertRaisesRegex(EvolutionError, "without a matching latest PASS verification"):
+                record_outcome_file(path, "TASK-1", "DONE", "must fail closed")
+
+            record_verification_file(
+                path,
+                "TASK-1",
+                "PASS",
+                "GENERATED_TEST_EXECUTION",
+                "b" * 64,
+            )
             record_outcome_file(path, "TASK-1", "DONE", "test transition")
             queue = load_queue(path)
             self.assertEqual([event["event"] for event in queue["history"]], [
                 "CANDIDATE_ADDED",
+                "VERIFICATION_RECORDED",
                 "STATUS_CHANGED",
             ])
+
+    def test_unbound_verification_is_informational_and_cannot_authorize_done(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "TASK_QUEUE.json"
+            update_queue_file(path, [{"id": "TASK-1", "type": "proposal"}])
+            record_verification_file(path, "UNKNOWN", "PASS", "unit")
+            queue = load_queue(path)
+            evidence = queue["history"][-1]
+            self.assertEqual(evidence["task_id"], "UNKNOWN")
+            self.assertIsNone(evidence["attempt"])
+            with self.assertRaisesRegex(EvolutionError, "matching latest PASS"):
+                record_outcome_file(path, "TASK-1", "IN_PROGRESS", "start")
+                record_outcome_file(path, "TASK-1", "DONE", "unbound evidence must not authorize DONE")
+
+    def test_stale_pass_from_previous_attempt_cannot_mark_task_done(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "TASK_QUEUE.json"
+            update_queue_file(path, [{"id": "TASK-1", "type": "proposal"}])
+            record_verification_file(path, "TASK-1", "PASS", "unit", "a" * 64)
+            record_outcome_file(path, "TASK-1", "IN_PROGRESS", "begin a new attempt")
+            with self.assertRaisesRegex(EvolutionError, "current attempt"):
+                record_outcome_file(path, "TASK-1", "DONE", "stale PASS must not authorize DONE")
+            record_verification_file(path, "TASK-1", "PASS", "unit", "b" * 64)
+            record_outcome_file(path, "TASK-1", "DONE", "current attempt verified")
+            queue = load_queue(path)
+            evidence = [
+                event for event in queue["history"]
+                if event.get("event") == "VERIFICATION_RECORDED"
+            ]
+            self.assertEqual([event["attempt"] for event in evidence], [0, 1])
+            self.assertEqual(queue["items"][0]["status"], "DONE")
+
+    def test_latest_failed_verification_blocks_done_even_after_an_earlier_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "TASK_QUEUE.json"
+            update_queue_file(path, [{"id": "TASK-1", "type": "proposal"}])
+            record_verification_file(
+                path, "TASK-1", "PASS", "GENERATED_TEST_EXECUTION", "d" * 64
+            )
+            record_verification_file(
+                path, "TASK-1", "FAIL", "GENERATED_TEST_EXECUTION", "e" * 64
+            )
+
+            with self.assertRaisesRegex(EvolutionError, "without a matching latest PASS verification"):
+                record_outcome_file(path, "TASK-1", "DONE", "stale PASS must not authorize DONE")
+
+            queue = load_queue(path)
+            self.assertEqual(queue["items"][0]["status"], "OPEN")
+            self.assertEqual(queue["history"][-1]["verification_status"], "FAIL")
 
     def test_failed_atomic_replace_preserves_previous_queue_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "TASK_QUEUE.json"
             update_queue_file(path, [{"id": "TASK-1", "type": "proposal"}])
+            record_verification_file(
+                path,
+                "TASK-1",
+                "PASS",
+                "GENERATED_TEST_EXECUTION",
+                "c" * 64,
+            )
             original_bytes = path.read_bytes()
 
             with patch("autopoesis.task_queue.os.replace", side_effect=OSError("disk error")):
