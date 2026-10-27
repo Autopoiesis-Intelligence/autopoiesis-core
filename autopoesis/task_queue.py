@@ -267,9 +267,14 @@ def record_outcome(queue: dict[str, Any], task_id: str, status: str, note: str =
             and event.get("event") == "VERIFICATION_RECORDED"
             and event.get("task_id") == task_id
         ]
-        if not verification_events or verification_events[-1].get("verification_status") != "PASS":
+        if (
+            not verification_events
+            or verification_events[-1].get("verification_status") != "PASS"
+            or verification_events[-1].get("attempt") != attempts
+        ):
             raise EvolutionError(
-                f"Cannot mark task {task_id!r} DONE without a matching latest PASS verification"
+                f"Cannot mark task {task_id!r} DONE without a matching latest PASS verification "
+                "for the current attempt"
             )
 
     item["status"] = status
@@ -310,9 +315,18 @@ def record_verification_file(
 
     with queue_write_lock(path):
         queue = load_queue(path)
+        matches = [item for item in queue.get("items", []) if item.get("id") == task_id]
+        if len(matches) != 1:
+            raise EvolutionError(
+                f"Expected exactly one queued task with id {task_id!r} for verification evidence"
+            )
+        attempts = matches[0].get("attempts", 0)
+        if type(attempts) is not int or attempts < 0:
+            raise EvolutionError(f"Invalid attempts count for queued task {task_id!r}")
         event = {
             "event": "VERIFICATION_RECORDED",
             "task_id": task_id,
+            "attempt": attempts,
             "verification_status": verification_status,
             "verification_level": verification_level,
             "artifact_sha256": artifact_sha256,
