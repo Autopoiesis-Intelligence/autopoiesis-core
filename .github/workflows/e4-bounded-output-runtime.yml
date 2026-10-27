@@ -41,7 +41,7 @@ jobs:
             --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
             --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
             --cap-drop ALL --security-opt no-new-privileges \
-            "$TEST_IMAGE" sh -c 'ulimit -f 2048; yes X > /tmp/flood.txt'
+            "$TEST_IMAGE" sh -c 'touch /tmp/flood.txt; ulimit -f 2048; while :; do printf X >> /tmp/flood.txt; done'
           test_status=$?
           set -e
           set -e
