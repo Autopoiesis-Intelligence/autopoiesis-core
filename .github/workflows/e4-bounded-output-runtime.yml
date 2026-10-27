@@ -30,23 +30,27 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/runtime-probe-output.txt"
-          raw_output="$RUNNER_TEMP/runtime-probe-output.raw.txt"
+          flood_dir="$RUNNER_TEMP/runtime-probe-flood"
+          raw_output="$flood_dir/flood.txt"
           cidfile="$RUNNER_TEMP/runtime-probe-container.id"
-          rm -f "$output" "$raw_output" "$cidfile"
+          rm -rf "$flood_dir"
+          mkdir -p "$flood_dir"
+          chmod 0777 "$flood_dir"
+          rm -f "$output" "$cidfile"
           docker pull --quiet "$TEST_IMAGE"
 
           set +e
           docker run --cidfile "$cidfile" \
-            --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
+            --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev \
+            --mount "type=bind,source=$flood_dir,target=/out" --user 65534:65534 \
             --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
             --cap-drop ALL --security-opt no-new-privileges \
-            "$TEST_IMAGE" sh -c 'touch /tmp/flood.txt; ulimit -f 2048; python -c "import signal,sys; signal.signal(signal.SIGXFSZ, signal.SIG_IGN); f=open(\"/tmp/flood.txt\",\"ab\"); chunk=b\"X\"*65536; exec(\"try:\\n while True:\\n  f.write(chunk); f.flush()\\nexcept OSError:\\n f.close(); sys.exit(23)\")"'
+            "$TEST_IMAGE" sh -c 'touch /out/flood.txt; ulimit -f 2048; python -c "import signal,sys; signal.signal(signal.SIGXFSZ, signal.SIG_IGN); f=open(\"/out/flood.txt\",\"ab\"); chunk=b\"X\"*65536; exec(\"try:\\n while True:\\n  f.write(chunk); f.flush()\\nexcept OSError:\\n f.close(); sys.exit(23)\")"'
           test_status=$?
           set -e
 
           test -s "$cidfile"
           container_id="$(cat "$cidfile")"
-          docker cp "$container_id:/tmp/flood.txt" "$raw_output"
           cat "$raw_output" | python scripts/capture_bounded_output.py "$output" --max-bytes "$OUTPUT_LIMIT"
           bytes="$(wc -c < "$output")"
           running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
