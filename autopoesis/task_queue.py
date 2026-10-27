@@ -320,10 +320,10 @@ def record_verification_file(
     with queue_write_lock(path):
         queue = load_queue(path)
         matches = [item for item in queue.get("items", []) if item.get("id") == task_id]
-        if len(matches) > 1 or (not matches and queue.get("items")):
-            raise EvolutionError(
-                f"Expected exactly one queued task with id {task_id!r} when the queue is non-empty"
-            )
+        if len(matches) > 1:
+            raise EvolutionError(f"Expected at most one queued task with id {task_id!r}")
+        # Verification tasks can exist outside the queue. Keep those records informational:
+        # attempt=None means they cannot satisfy the queue's DONE guard.
         attempts = matches[0].get("attempts", 0) if matches else None
         if attempts is not None and (type(attempts) is not int or attempts < 0):
             raise EvolutionError(f"Invalid attempts count for queued task {task_id!r}")
