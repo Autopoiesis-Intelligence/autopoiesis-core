@@ -117,6 +117,14 @@ class QueueSnapshotValidationTests(unittest.TestCase):
                 "description": "Keep this task status and history across runs.",
             }
             update_queue_file(queue_path, [candidate])
+            from autopoesis.task_queue import record_verification_file
+            record_verification_file(
+                queue_path,
+                candidate["id"],
+                "PASS",
+                "GENERATED_TEST_EXECUTION",
+                "f" * 64,
+            )
 
             tasks_path.write_text(json.dumps({"tasks": [{
                 "id": "set-status",
