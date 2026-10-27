@@ -122,6 +122,10 @@ def _validate_history(history: list[Any]) -> None:
             level = event.get("verification_level")
             if not isinstance(level, str) or not level.strip():
                 raise EvolutionError(f"{prefix}: verification_level must be a non-empty string")
+            if "attempt" in event and event["attempt"] is not None and (
+                type(event["attempt"]) is not int or event["attempt"] < 0
+            ):
+                raise EvolutionError(f"{prefix}: attempt must be a non-negative integer or null")
             artifact_hash = event.get("artifact_sha256")
             if artifact_hash is not None and (
                 not isinstance(artifact_hash, str)
@@ -316,12 +320,12 @@ def record_verification_file(
     with queue_write_lock(path):
         queue = load_queue(path)
         matches = [item for item in queue.get("items", []) if item.get("id") == task_id]
-        if len(matches) != 1:
+        if len(matches) > 1 or (not matches and queue.get("items")):
             raise EvolutionError(
-                f"Expected exactly one queued task with id {task_id!r} for verification evidence"
+                f"Expected exactly one queued task with id {task_id!r} when the queue is non-empty"
             )
-        attempts = matches[0].get("attempts", 0)
-        if type(attempts) is not int or attempts < 0:
+        attempts = matches[0].get("attempts", 0) if matches else None
+        if attempts is not None and (type(attempts) is not int or attempts < 0):
             raise EvolutionError(f"Invalid attempts count for queued task {task_id!r}")
         event = {
             "event": "VERIFICATION_RECORDED",
