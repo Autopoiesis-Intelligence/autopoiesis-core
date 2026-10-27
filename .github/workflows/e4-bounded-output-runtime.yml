@@ -36,7 +36,7 @@ jobs:
           docker pull --quiet "$TEST_IMAGE"
 
           set +e
-          timeout --signal=TERM --kill-after=3s 30s docker run --cidfile "$cidfile" \
+          timeout --signal=TERM --kill-after=3s 30s docker run -i --cidfile "$cidfile" \
             --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
             --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
             --cap-drop ALL --security-opt no-new-privileges \
