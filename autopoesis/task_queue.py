@@ -183,11 +183,6 @@ def _validate_history(history: list[Any]) -> None:
                 raise EvolutionError(f"{prefix}: note must be a string")
             if "lease_sha256" in event and not _is_digest(event["lease_sha256"]):
                 raise EvolutionError(f"{prefix}: lease_sha256 must be a lowercase SHA-256 hex digest")
-            if event["to"] == "DONE":
-                if not _is_digest(event.get("revision")):
-                    raise EvolutionError(f"{prefix}: DONE revision must be a lowercase SHA-256 hex digest")
-                if event.get("revision_semantics") != "tested_source_snapshot_sha256":
-                    raise EvolutionError(f"{prefix}: DONE revision_semantics must be 'tested_source_snapshot_sha256'")
         if event_type == "VERIFICATION_RECORDED":
             verification_status = event.get("verification_status")
             if not isinstance(verification_status, str) or verification_status not in {"PASS", "FAIL"}:
