@@ -84,12 +84,25 @@ class BoundedOutputCaptureTests(unittest.TestCase):
 
     def test_output_flood_is_capped_and_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "output.bin"
+            root = Path(directory)
+            target = root / "output.bin"
+            cid_file = root / "container.id"
+            cid_file.write_text("fake-container-id", encoding="ascii")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_docker = bin_dir / "docker"
+            fake_docker.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+            fake_docker.chmod(0o755)
+            import os
+            env = dict(os.environ)
+            env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
             result = subprocess.run(
-                [sys.executable, str(SCRIPT), str(target), "--max-bytes", "64"],
+                [sys.executable, str(SCRIPT), str(target), "--max-bytes", "64",
+                 "--container-id-file", str(cid_file)],
                 input=b"x" * 100_000,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=env,
                 check=False,
             )
             self.assertEqual(result.returncode, 125)
