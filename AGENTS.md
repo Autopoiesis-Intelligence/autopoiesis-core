@@ -53,7 +53,7 @@ Proving L1–L2 does not prove L3–L4. The agents' development loop (agents wri
 
 **Open PR limit (owner decision, 2026-10-23).** This is the only place the limit is set; other documents and prompts point here.
 - At most 5 open PRs per agent wait for audit or merge. Every kind counts: code, docs and cleanup. Draft PRs count too.
-- At the limit, an agent starts no new work. Its scheduled tick does the cheap state check, keeps open PRs current (verdicts, labels, rebases after a merge) and ends. Finished branches without a PR wait until a slot frees.
+- At the limit, an agent opens no new PR. It keeps open PRs current (verdicts, labels, rebases after a merge) and may continue the next independent task from the plan on a branch without a PR (owner, SEQ EXIT-MANUAL-MODE, 2026-10-23). Finished branches without a PR wait until a slot frees, oldest first.
 - Merge order: the oldest `ready-for-owner` PR first. When a PR becomes `ready-for-owner`, the author agent tells the owner which PR is next, with its exact head SHA.
 - The reason is cost: every open PR is rechecked on each tick, rebased after each merge, and needs a new audit after each push. Work queued ahead of the merge goes stale and is redone.
 
