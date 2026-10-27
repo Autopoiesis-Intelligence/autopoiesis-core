@@ -1,6 +1,10 @@
 name: E4 bounded-output runtime probe
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/e4-bounded-output-runtime.yml'
+      - 'scripts/capture_bounded_output.py'
   workflow_dispatch:
 
 permissions: {}
