@@ -189,18 +189,21 @@ class MigrationCommitBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(EvolutionError, "legacy_history_length"):
             migrate_queue_file(self.path)
 
-    def test_reordering_history_across_the_boundary_fails_closed(self):
-        # merge_candidates sorts history by time. With a clock behind the recorded events, a new
-        # candidate sorts into the legacy prefix and pushes the last legacy event, here a DONE, out.
+    def test_clock_skew_cannot_move_events_across_the_boundary(self):
+        # A clock behind the recorded events used to sort a new candidate into the legacy
+        # prefix and push the last legacy event, here a DONE, out of it. Merging now appends.
         v1 = json.loads(V1_FIXTURE.read_text(encoding="utf-8"))
         for event in v1["history"]:
             event["at"] = "2999" + event["at"][4:]
         self.assertEqual(v1["history"][-1]["to"], "DONE")
         self.path.write_text(json.dumps(v1), encoding="utf-8")
         migrate_queue_file(self.path)
+        before = load_queue(self.path)
         update_queue_file(self.path, [candidate("T9")])
-        with self.assertRaisesRegex(EvolutionError, "does not match its bound PASS"):
-            load_queue(self.path)
+        after = load_queue(self.path)
+        boundary = before["legacy_history_length"]
+        self.assertEqual(after["history"][:boundary], before["history"][:boundary])
+        self.assertEqual((after["history"][-1]["event"], after["history"][-1]["task_id"]), ("CANDIDATE_ADDED", "T9"))
 
     def test_merging_candidates_after_migration_keeps_the_boundary(self):
         migrate_queue_file(self.path)

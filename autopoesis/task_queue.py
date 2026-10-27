@@ -410,7 +410,13 @@ def _validate_queue(queue: Any, version: int, legacy_done: dict[int, str] | None
 
 
 def merge_candidates(queue: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    """Add new candidates once; preserve existing statuses and append audit history."""
+    """Add new candidates once; preserve existing statuses and append audit history.
+
+    Existing history is never reordered: replay depends on write order, and the
+    migrated prefix of `legacy_history_length` events must stay in place. New
+    CANDIDATE_ADDED events are appended in id order. The merged queue is fully
+    validated before it is returned, so a caller never persists an invalid one.
+    """
     # Validate and copy through canonical JSON so callers cannot mutate stored state.
     try:
         merged = json.loads(canonical_json(queue))
@@ -421,8 +427,8 @@ def merge_candidates(queue: dict[str, Any], candidates: list[dict[str, Any]]) ->
     if not isinstance(merged.get("items"), list) or not isinstance(merged.get("history"), list):
         raise EvolutionError("Task queue must contain items and history arrays")
 
-    known = {item.get("id"): item for item in merged["items"] if isinstance(item, dict)}
-    added = 0
+    known = {item.get("id") for item in merged["items"] if isinstance(item, dict)}
+    new_items: dict[str, dict[str, Any]] = {}
     timestamp = datetime.now(timezone.utc).isoformat()
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -430,25 +436,24 @@ def merge_candidates(queue: dict[str, Any], candidates: list[dict[str, Any]]) ->
         candidate_id = candidate.get("id")
         if not isinstance(candidate_id, str) or not candidate_id.strip():
             raise EvolutionError("Each candidate needs a non-empty string id")
-        if candidate_id in known:
+        if candidate_id in known or candidate_id in new_items:
             continue
-        item = {
+        new_items[candidate_id] = {
             **candidate,
             "status": "OPEN",
             "attempts": 0,
             "first_seen": timestamp,
         }
-        merged["items"].append(item)
-        known[candidate_id] = item
+    for candidate_id in sorted(new_items):
+        merged["items"].append(new_items[candidate_id])
         merged["history"].append({
             "event": "CANDIDATE_ADDED",
             "task_id": candidate_id,
             "at": timestamp,
         })
-        added += 1
     merged["items"].sort(key=lambda item: item["id"])
-    merged["history"].sort(key=lambda item: (item.get("at", ""), item.get("task_id", ""), item.get("event", "")))
-    return {"queue": merged, "added": added, "total": len(merged["items"])}
+    _validate_queue(merged, QUEUE_VERSION)
+    return {"queue": merged, "added": len(new_items), "total": len(merged["items"])}
 
 
 def _apply_transition(queue: dict[str, Any], task_id: str, status: str, note: str = "") -> dict[str, Any]:
