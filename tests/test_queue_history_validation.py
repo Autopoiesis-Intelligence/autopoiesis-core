@@ -247,12 +247,18 @@ class QueueHistoryValidationTests(unittest.TestCase):
                 "STATUS_CHANGED",
             ])
 
-    def test_verification_for_unknown_task_is_rejected(self):
+    def test_unbound_verification_is_informational_and_cannot_authorize_done(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "TASK_QUEUE.json"
             update_queue_file(path, [{"id": "TASK-1", "type": "proposal"}])
-            with self.assertRaisesRegex(EvolutionError, "exactly one queued task"):
-                record_verification_file(path, "UNKNOWN", "PASS", "unit")
+            record_verification_file(path, "UNKNOWN", "PASS", "unit")
+            queue = load_queue(path)
+            evidence = queue["history"][-1]
+            self.assertEqual(evidence["task_id"], "UNKNOWN")
+            self.assertIsNone(evidence["attempt"])
+            with self.assertRaisesRegex(EvolutionError, "matching latest PASS"):
+                record_outcome_file(path, "TASK-1", "IN_PROGRESS", "start")
+                record_outcome_file(path, "TASK-1", "DONE", "unbound evidence must not authorize DONE")
 
     def test_stale_pass_from_previous_attempt_cannot_mark_task_done(self):
         with tempfile.TemporaryDirectory() as directory:
