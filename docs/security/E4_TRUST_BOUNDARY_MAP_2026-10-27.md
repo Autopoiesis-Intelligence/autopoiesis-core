@@ -39,7 +39,7 @@ Source-level review does not prove these properties end-to-end; verify the imple
 
 The `verify` job declares `permissions: {}` and runs the proposed test in a Docker container using a digest-pinned Python image, `--network none`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, a non-root UID, and a read-only workspace mount. These are meaningful defense-in-depth controls.
 
-They do not prove complete containment: the container shares the runner kernel, and Docker is invoked by a shell step on the runner. Test timeout, child-process cleanup, output size, archive/artifact parsing, and access to the Docker socket/runner paths require explicit adversarial tests. The workflow log is not itself an independent trust attestation.
+They do not prove complete containment: the container shares the runner kernel, and Docker is invoked by a shell step on the runner. The workflow currently pipes container output through `tee` into a runner-host file; source inspection does not show a byte cap on this output stream. A hostile generated test could therefore produce excessive output during the bounded run and consume runner disk. Add a bounded-output capture that continues draining or terminates the container safely, plus tests for output flooding and descendant processes after timeout. Also test archive/artifact parsing and access to Docker socket/runner paths. The workflow log is not itself an independent trust attestation.
 
 ### Zone D — queue acceptance and DONE transition
 
