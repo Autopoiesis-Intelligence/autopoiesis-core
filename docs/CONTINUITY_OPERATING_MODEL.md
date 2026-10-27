@@ -12,7 +12,7 @@ The project must remain resumable when any one model is unavailable or out of qu
 1. GitHub is canonical for repository content, branch refs, PRs, workflow runs, CI results, and artifacts.
 2. AGENTS.md defines safety, evidence, review, merge, and reporting policy. This document does not override it.
 3. TASKS.json defines tasks understood by the current deterministic core runner. It is not the whole software-development backlog.
-4. PLAN.md is the human/agent development backlog and dependency map. It must not be treated as executable authority.
+4. A standing backlog already exists as a proposal in PR #35 at docs/PLAN.md. Reconcile and reuse that artifact rather than creating a competing root PLAN.md; it is not active policy until reviewed and merged. Neither backlog is executable authority.
 5. TASK_QUEUE.json, RESULTS.json, and QUEUE_RESTORE_PROVENANCE.json are generated/runtime state. Their existence or a status string is not proof by itself; validate the current artifact, source run, SHA, schema, and relevant CI.
 6. docs/coordination/PROTOCOL.md is marked proposed. Do not treat it as active policy until the owner reviews and merges it.
 7. Chat history, summaries, model memory, and agent reports are pointers for retrieval, not evidence of current repository state.
@@ -69,7 +69,7 @@ This document does not configure scheduled messages or guarantee that ChatGPT ca
 
 - **Gate 1 — Reconcile:** confirm live main, open PRs, queue files, current architecture review, and actual Claude launch path.
 - **Gate 2 — Agree architecture:** resolve each recorded GPT/Claude disagreement; mark unresolved questions explicitly. Do not call the architecture final before that.
-- **Gate 3 — Operational backlog:** keep PLAN.md in sync with the accepted architecture and TASKS.json's narrower deterministic task scope.
+- **Gate 3 — Operational backlog:** reconcile this operating model with the existing docs/PLAN.md proposal in PR #35 and TASKS.json's narrower deterministic task scope; keep one canonical development backlog.
 - **Gate 4 — Dispatcher design:** specify idempotency, single-writer/concurrency, retry caps, checkpoint restore, model/provider adapters, and fail-closed behavior before changing code or workflows.
 - **Gate 5 — Safe implementation:** implement in small PRs; no auto-merge. Workflow, permissions, secret, and repository-setting changes require explicit owner approval for the specific change.
 - **Gate 6 — Evidence:** prove each feature on exact SHAs with CI and, where claimed, runtime and persistence probes. A successful unit test is not proof of unattended autonomy.
