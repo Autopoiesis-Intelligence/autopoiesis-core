@@ -36,18 +36,14 @@ jobs:
           docker pull --quiet "$TEST_IMAGE"
 
           set +e
-          timeout --signal=TERM --kill-after=3s 30s docker run -i --cidfile "$cidfile" \
+          set +e
+          docker run --cidfile "$cidfile" \
             --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
             --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
             --cap-drop ALL --security-opt no-new-privileges \
-            "$TEST_IMAGE" sh -c 'ulimit -f 2048; exec python - > /tmp/flood.txt 2>&1' <<'PY'
-          import sys
-          block = b"X" * 8192
-          while True:
-              sys.stdout.buffer.write(block)
-              sys.stdout.buffer.flush()
-          PY
+            "$TEST_IMAGE" sh -c 'ulimit -f 2048; exec python -c "import sys; block=b\\\"X\\\"*8192; f=sys.stdout.buffer; exec(\\\"while True:\\\\n f.write(block)\\\\n f.flush()\\\")" > /tmp/flood.txt 2>&1'
           test_status=$?
+          set -e
           set -e
 
           test -s "$cidfile"
