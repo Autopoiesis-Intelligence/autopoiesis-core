@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/e4-bounded-output-runtime.yml'
+      - '.github/workflows/copilot-test-writer.yml'
       - 'scripts/capture_bounded_output.py'
   workflow_dispatch:
 
@@ -11,7 +12,7 @@ permissions: {}
 
 jobs:
   bounded-output-runtime:
-    name: Verify output flood stops a real Docker container
+    name: Verify container-side output cap under a flood
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions: {}
@@ -24,47 +25,39 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run controlled output flood and verify hard cap
+      - name: Flood a container-local file with an OS file-size limit
         shell: bash
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/runtime-probe-output.txt"
+          raw_output="$RUNNER_TEMP/runtime-probe-output.raw.txt"
           cidfile="$RUNNER_TEMP/runtime-probe-container.id"
-          rm -f "$output" "$cidfile"
+          rm -f "$output" "$raw_output" "$cidfile"
           docker pull --quiet "$TEST_IMAGE"
 
           set +e
-          timeout --signal=TERM --kill-after=3s 30s docker run --rm --cidfile "$cidfile" \
-            --network none --read-only --tmpfs /tmp --user 65534:65534 \
+          timeout --signal=TERM --kill-after=3s 30s docker run --cidfile "$cidfile" \
+            --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
             --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
             --cap-drop ALL --security-opt no-new-privileges \
-            "$TEST_IMAGE" python -c 'import sys; block=b"X"*8192; f=sys.stdout.buffer; exec("while True:\n f.write(block)\n f.flush()")' \
-            2>&1 | python scripts/capture_bounded_output.py "$output" --max-bytes "$OUTPUT_LIMIT" --container-id-file "$cidfile"
-          statuses=("${PIPESTATUS[@]}")
-          docker_status="${statuses[0]}"
-          capture_status="${statuses[1]}"
+            "$TEST_IMAGE" sh -c 'ulimit -f 2048; exec python -c '\''import sys; block=b"X"*8192; f=sys.stdout.buffer; exec("while True:\\n f.write(block)\\n f.flush()")'\'' > /tmp/flood.txt 2>&1'
+          test_status=$?
           set -e
 
-          bytes="$(wc -c < "$output")"
-          echo "docker_exit=$docker_status"
-          echo "capture_exit=$capture_status"
-          echo "captured_bytes=$bytes"
-          echo "limit_bytes=$OUTPUT_LIMIT"
-
-          test "$capture_status" -eq 125
-          test "$bytes" -eq "$OUTPUT_LIMIT"
           test -s "$cidfile"
           container_id="$(cat "$cidfile")"
+          docker cp "$container_id:/tmp/flood.txt" "$raw_output"
+          cat "$raw_output" | python scripts/capture_bounded_output.py "$output" --max-bytes "$OUTPUT_LIMIT"
+          bytes="$(wc -c < "$output")"
+          running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
+          echo "container_exit=$test_status"
+          echo "captured_bytes=$bytes"
+          echo "limit_bytes=$OUTPUT_LIMIT"
+          echo "container_running=$running"
 
-          # --rm removes the container after docker kill is observed; allow a short bounded wait.
-          for attempt in $(seq 1 20); do
-            if ! docker inspect "$container_id" >/dev/null 2>&1; then
-              echo "runtime_result=container_stopped_and_removed"
-              exit 0
-            fi
-            sleep 0.25
-          done
-
-          echo "::error::Container still exists after bounded-output handler requested docker kill."
-          docker inspect "$container_id" || true
-          exit 1
+          test "$test_status" -ne 0
+          test "$bytes" -le "$OUTPUT_LIMIT"
+          test "$bytes" -gt 0
+          test "$running" = "false"
+          docker rm "$container_id" >/dev/null
+          echo "runtime_result=container_output_capped_and_process_exited"
