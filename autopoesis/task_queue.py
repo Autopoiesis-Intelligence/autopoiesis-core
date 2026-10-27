@@ -507,6 +507,12 @@ def advance_task(
     updated = _apply_transition(queue, task_id, status, note)
     if status == "SELECTED":
         updated["history"][-1]["lease_sha256"] = _lease_fingerprint(lease["token"])
+    if status == "DONE":
+        # Persist the exact revision that satisfied the PASS gate on the DONE
+        # transition itself; a separate PASS event alone is not enough to make
+        # the terminal status self-describing.
+        updated["history"][-1]["revision"] = revision
+        updated["history"][-1]["revision_semantics"] = "tested_source_snapshot_sha256"
     target = next(entry for entry in updated["items"] if entry["id"] == task_id)
     if status in ACTIVE_STATUSES:
         target["lease"] = lease
