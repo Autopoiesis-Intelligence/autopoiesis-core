@@ -464,8 +464,9 @@ def advance_task(
     Entering SELECTED grants a lease to `owner`; every later change of an
     active item needs that lease's unexpired `token`. Repeating the current
     status is a no-op, but on an active item it still needs a valid token.
-    DONE also needs `revision`, the digest of the code as it is now; a PASS
-    recorded for other code does not count.
+    DONE also needs `revision`, the digest of the exact source snapshot named
+    by a PASS verification under the current lease. Callers must not describe
+    this as proof that a mutable live source tree is unchanged at finalization.
     """
     if not isinstance(status, str) or status not in QUEUE_STATUSES:
         raise EvolutionError(f"Unsupported queue status: {status!r}")
@@ -645,8 +646,9 @@ def record_verification_file(
     number captured before verification started, and be recorded by the holder
     of its current, unexpired lease. It is refused unless that exact attempt is
     still IN_PROGRESS, so a late result cannot count for a retry.
-    ``revision`` is the digest of the code that was tested; DONE compares it
-    with the code as it is when the task completes.
+    ``revision`` is the digest of the source snapshot that was tested; DONE
+    requires a matching PASS digest under the current lease. This queue layer
+    does not itself prove that the live source tree remains unchanged.
     """
     if not isinstance(task_id, str) or not task_id.strip():
         raise EvolutionError("Verification task_id must be a non-empty string")
