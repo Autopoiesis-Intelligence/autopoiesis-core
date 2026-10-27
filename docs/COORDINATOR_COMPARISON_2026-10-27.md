@@ -48,3 +48,23 @@ Each test record must include candidate SHA, workflow run ID, job outcome, test 
 Do not select a winner yet. First compare #45 and #51 on the shared acceptance matrix. Treat #59 as the current-base copy of the coordinator patch for comparison; do not accept #55/#56 in addition. Then consolidate archive and snapshot-binding behavior once across #58/#60/#62/#63. Preserve #35/#37 as documentation/theory proposals until their claims and links are reconciled with the chosen implementation. Keep #64–#66 as a separate E4 safety track; do not let that track's synthetic CI probes be presented as proof of hostile-code isolation.
 
 No PR was merged or closed by this work. No main, workflow, permission, secret, or repository setting was changed.
+
+
+## Current-head CI check (observed 2026-10-27)
+
+These are checks attached to the exact PR heads, not claims of runtime production execution.
+
+| PR | Exact head | Check evidence | Interpretation |
+|---|---|---|---|
+| #45 | `ba65d04f7cb4115c58ca2d512ce8a8786864e5d8` | CI run `40040883201` success | Unit/CI pass; does not by itself establish a real restore cycle. |
+| #51 | `04ac1d1ab1fcfc9f762758d385adb27a084a5f45` | CI run `40341136653` success; negative-fault run `40340951044` failed under title `Negative restore fault: tamper_archive` | Normal CI is green. The negative run is designed to fail, but the title alone does not prove the intended gate was reached; inspect gate-labelled output before treating it as evidence. |
+| #59 | `a9b263e8ea31b164a17eecbc6a4fd1383e2d73bd` | CI run `40337565727` success | Unit/CI pass for the coordinator patch on this base; not runtime proof. |
+| #60 | `8339dc6792ae66c86a7f300c89fab1c36a5647b1` | Normal CI run `40424820253` success; several earlier negative-fault dispatches failed | The current head has a green CI run, but the failed negative dispatches require gate-output interpretation. |
+| #62 | `8d3f42df50337b86828e64066bdcc1018aa17b5a` | PR CI run `40426758539` success | Green CI for this earlier overlapping integration head. |
+| #63 | `6d00f8ad0eb5fc5a9c143b18a4cbdfa3968b8876` | PR CI run `40431109654` success; dispatch CI run `40432310161` success; negative-fault run `40432281472` failed with title `Negative restore fault: tamper_archive` | Best observed candidate for further review because it combines the queue-cycle patch, archive limits, fault-gate checks, and restored PASS-revision binding. This is a review priority, not an approval or proof of real unattended operation. |
+
+The failed runs named `Negative restore fault: tamper_archive` are intentionally negative dispatches. A failed workflow is not sufficient evidence that the expected validation gate rejected the tampered archive; the run must report the matching gate label and fail for the intended reason. The successful normal CI runs are useful but remain CI evidence, not proof of the full scheduled cycle in a real runtime.
+
+## Updated next action
+
+Prioritize one code-level audit of #63 at `6d00f8ad0eb5fc5a9c143b18a4cbdfa3968b8876`, then compare its complete diff and tests with #60 and #62. Verify the exact negative-fault gate output for run `40432281472`. Do not merge or close any PR. Revisit #45 versus #51 only after recording whether their distinct coordinator models can share the same acceptance tests without incompatible state semantics.
