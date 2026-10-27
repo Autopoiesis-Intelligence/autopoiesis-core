@@ -346,6 +346,10 @@ class BoundedQueueCycleTests(unittest.TestCase):
             and event.get("to") == "DONE"
         )
         self.assertEqual(done_event.get("revision"), snapshot_digest)
+        self.assertEqual(
+            done_event.get("revision_semantics"),
+            "tested_source_snapshot_sha256",
+        )
         passing_events = [
             event for event in queue["history"]
             if event.get("event") == "VERIFICATION_RECORDED"
