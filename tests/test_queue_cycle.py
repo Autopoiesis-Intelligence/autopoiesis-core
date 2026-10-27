@@ -286,7 +286,7 @@ class BoundedQueueCycleTests(unittest.TestCase):
         package_root = Path(self.temp.name) / "autopoesis"
         package_root.mkdir()
         source_file = package_root / "sample.py"
-        source_file.write_text("VALUE = 1\\n", encoding="utf-8")
+        source_file.write_text("VALUE = 1\n", encoding="utf-8")
         snapshot_digest = queue_cycle.source_tree_digest(package_root)
         digest_calls = {"count": 0}
 
@@ -296,7 +296,7 @@ class BoundedQueueCycleTests(unittest.TestCase):
             if digest_calls["count"] == 3:
                 # The final digest check returns the snapshot digest, then an
                 # external writer changes the live tree before DONE is written.
-                source_file.write_text("VALUE = 2\\n", encoding="utf-8")
+                source_file.write_text("VALUE = 2\n", encoding="utf-8")
             return observed
 
         def handler(task, path):
