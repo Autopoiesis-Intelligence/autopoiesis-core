@@ -248,26 +248,41 @@ jobs:
           PY
           module="$(python -c 'import sys; print(sys.argv[1][:-3].replace("/", "."))' "$TARGET")"
           docker pull --quiet "$TEST_IMAGE"
+          cidfile="$RUNNER_TEMP/test-container.id"
+          raw_output="$RUNNER_TEMP/test-output.raw.txt"
+          output="$RUNNER_TEMP/test-output.txt"
+          rm -f "$cidfile" "$raw_output" "$output"
+          cleanup_container() {
+            if [[ -s "$cidfile" ]]; then
+              docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_container EXIT
           set +e
-          timeout --signal=TERM --kill-after=5s 120s docker run --rm --cidfile "$RUNNER_TEMP/test-container.id" --network none --read-only --tmpfs /tmp --user 65534:65534 \
+          timeout --signal=TERM --kill-after=5s 120s docker run --cidfile "$cidfile" --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
             --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
             --cap-drop ALL --security-opt no-new-privileges -e PYTHONDONTWRITEBYTECODE=1 \
             -v "$sandbox":/work:ro -w /work "$TEST_IMAGE" \
-            python -m unittest -v "$module" 2>&1 | python scripts/capture_bounded_output.py "$RUNNER_TEMP/test-output.txt" --max-bytes 1048576 --container-id-file "$RUNNER_TEMP/test-container.id"
-          pipeline_status=(${PIPESTATUS[@]})
-          test_status=${pipeline_status[0]}
-          capture_status=${pipeline_status[1]}
+            sh -c 'ulimit -f 2048; exec python -m unittest -v "$1" > /tmp/test-output.txt 2>&1' sh "$module"
+          test_status=$?
           set -e
-          if [[ "$capture_status" -ne 0 ]]; then
-            test_status="$capture_status"
+          if [[ ! -s "$cidfile" ]]; then
+            echo "::error::Docker did not create a container ID file."
+            exit 126
           fi
+          container_id="$(cat "$cidfile")"
+          if [[ "$test_status" -eq 124 || "$test_status" -eq 137 ]]; then
+            docker kill "$container_id" >/dev/null 2>&1 || true
+          fi
+          docker cp "$container_id:/tmp/test-output.txt" "$raw_output"
+          cat "$raw_output" | python scripts/capture_bounded_output.py "$output" --max-bytes 1048576
           {
             echo "## Proposed test run (isolated container on a copy, not the repository)"
             echo "- Module: $module"
             echo "- Exit code: $test_status"
-            echo '```text'
-            tail -n 60 "$RUNNER_TEMP/test-output.txt"
-            echo '```'
+            echo "- Output is redirected inside the container and constrained by file-size and tmpfs limits before it reaches the runner."
+            echo "--- test output ---"
+            tail -n 60 "$output"
             echo "- The test is not committed. A reviewer must accept it before it enters a PR."
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$test_status"
