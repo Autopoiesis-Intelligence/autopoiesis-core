@@ -13,6 +13,7 @@
 4. PRs #33–#37 are earlier standalone lifecycle, selection, leases, plan, and theory changes based on main. The open PRs are not all equivalent: some may be foundational, some superseded, and some may be documentation-only.
 5. PRs #64–#66 are a separate E4 safety investigation line on main. CI success does not by itself prove the runtime security property; the known output-overflow probe remains limited in what it demonstrates.
 6. This list is a live snapshot of PR metadata only. It does not include per-PR changed-file diffs, mergeability, current check state, independent review verdict, or proof of runtime behavior. Those are required before recommending merge/closure.
+7. **SHA drift found while sampling PR #45 and #51:** PR #45's recorded CI comment names current head `ba65d04f7cb4115c58ca2d512ce8a8786864e5d8` and run `40040883201`, but restore-only steps were skipped on that PR CI path. PR #51 currently points to head `04ac1d1ab1fcfc9f762758d385adb27a084a5f45`, while its historical runtime restore comments cite older head `c0422b16e16854b972171ed535cb2e0c4b2e1543` and runs `40213504301`, `40213528778`, `40213562276`, `40213587940`. Those runtime results **do not prove the current #51 head**. Re-run the required controlled runtime sequence on the exact current head before using it as acceptance evidence.
 
 ## Proposed disposition workflow
 
