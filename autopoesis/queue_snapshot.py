@@ -23,6 +23,13 @@ _GIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 NEGATIVE_FAULT_TITLE_PREFIX = "Negative restore fault: "
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
+# Resource limits for CI queue snapshot artifacts; reject before extraction.
+MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 100
+MAX_MEMBER_UNCOMPRESSED_BYTES = 8 * 1024 * 1024
+MAX_TOTAL_UNCOMPRESSED_BYTES = 16 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 200
+
 
 def _is_first_attempt(value: Any) -> bool:
     # Exact int: True == 1 and 1.0 == 1 would otherwise pass as the original attempt.
@@ -206,6 +213,11 @@ def verify_and_extract_artifact_archive(
         raise ValueError("Expected artifact digest must be a sha256-prefixed 64-character digest")
     if destination_path.exists():
         raise ValueError("Artifact extraction destination already exists")
+    archive_size = archive_path.stat().st_size
+    if archive_size > MAX_ARCHIVE_BYTES:
+        raise ValueError(
+            f"Downloaded artifact archive exceeds size limit ({MAX_ARCHIVE_BYTES} bytes)"
+        )
 
     digest = hashlib.sha256()
     with archive_path.open("rb") as archive_file:
@@ -223,9 +235,30 @@ def verify_and_extract_artifact_archive(
             members = bundle.infolist()
             if not members:
                 raise ValueError("Downloaded artifact archive is empty")
+            if len(members) > MAX_ARCHIVE_MEMBERS:
+                raise ValueError(
+                    f"Downloaded artifact archive exceeds member count limit ({MAX_ARCHIVE_MEMBERS})"
+                )
+            total_uncompressed = 0
             names: set[str] = set()
             for member in members:
                 name = member.filename
+                if member.file_size > MAX_MEMBER_UNCOMPRESSED_BYTES:
+                    raise ValueError(
+                        f"Archive member exceeds uncompressed size limit: {name!r}"
+                    )
+                total_uncompressed += member.file_size
+                if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
+                    raise ValueError(
+                        f"Archive exceeds total uncompressed size limit ({MAX_TOTAL_UNCOMPRESSED_BYTES} bytes)"
+                    )
+                if member.file_size > 0 and (
+                    member.compress_size == 0
+                    or member.file_size / member.compress_size > MAX_COMPRESSION_RATIO
+                ):
+                    raise ValueError(
+                        f"Archive member exceeds compression ratio limit: {name!r}"
+                    )
                 path = PurePosixPath(name)
                 if (
                     not name
