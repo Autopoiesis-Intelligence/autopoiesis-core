@@ -31,3 +31,24 @@
 ## Decision
 
 **E4 remains BLOCKED / NOT PROVEN.** This is an evidence gap and a security-boundary concern, not a claim that every listed attack has been reproduced. No workflow permissions, secrets, or protected-branch settings were changed in this review.
+
+
+## Additional workflow review
+
+The source review was extended to `.github/workflows/copilot-test-writer.yml` and `.github/workflows/copilot-agent-trial.yml`.
+
+Positive controls observed in `copilot-test-writer.yml`:
+- The `verify` job declares `permissions: {}` and no job-level secret.
+- The generated test runs in Docker with `--network none`, `--read-only`, a non-root UID, dropped capabilities, and `no-new-privileges`.
+- The test image is pinned by digest.
+- The writer job uploads a patch artifact; the verify job applies it to a throwaway copy and runs the new test in the container.
+- The writer job's Copilot token is explicitly supplied only to writer-job steps, not the verify job.
+
+Residual questions:
+- The container shares the GitHub runner kernel; this is not proof against kernel/container escape.
+- The outer timeout's effect on a Docker container and its descendant processes must be tested.
+- The artifact is parsed and applied on the runner before the generated test enters the container; this pre-execution path needs adversarial artifact tests.
+- `copilot-agent-trial.yml` runs a model CLI in a job where the Copilot token is present, so prompt/tool restrictions and secret handling remain relevant to that separate workflow.
+- `branch-cleanup.yml` has `contents: write`; it is a separate manual workflow and must remain outside any untrusted candidate-execution path.
+
+This extends the reviewed scope but does not establish that every repository workflow or every trigger has been exhaustively audited. No adversarial runtime probes were run during this source review.
