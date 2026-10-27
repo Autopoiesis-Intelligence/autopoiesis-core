@@ -54,7 +54,9 @@ class QueueDurabilityTests(unittest.TestCase):
             load_queue(self.path)
 
     def test_failed_write_or_flush_preserves_previous_queue_bytes(self):
-        original = self._seed()
+        self._seed()
+        record_verification_file(self.path, "TASK-1", "PASS", "unit")
+        original = self.path.read_bytes()
         for target in ("autopoesis.task_queue.os.fsync", "autopoesis.task_queue.os.fdopen"):
             with self.subTest(target=target):
                 with patch(target, side_effect=OSError("disk full")):
@@ -104,7 +106,9 @@ class QueueDurabilityTests(unittest.TestCase):
     def test_writer_is_rejected_while_another_writer_holds_the_queue(self):
         from autopoesis.task_queue import queue_write_lock
 
-        original = self._seed()
+        self._seed()
+        record_verification_file(self.path, "TASK-1", "PASS", "unit")
+        original = self.path.read_bytes()
         with queue_write_lock(self.path):
             with self.assertRaisesRegex(EvolutionError, "locked by another writer"):
                 record_outcome_file(self.path, "TASK-1", "DONE", "concurrent")
