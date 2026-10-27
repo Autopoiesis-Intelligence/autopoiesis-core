@@ -81,7 +81,7 @@ jobs:
             --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
             --cpus 0.5 --memory 128m --memory-swap 128m --pids-limit 32 \
             --cap-drop ALL --security-opt no-new-privileges \
-            "$TEST_IMAGE" python -c 'import os; chunk=b"Z"*65536; exec("while True:\\n os.write(1, chunk)")' \
+            "$TEST_IMAGE" python -c 'import os; chunk=b"Z"*65536; exec("while True:\n os.write(1, chunk)")' \
             | python scripts/capture_bounded_output.py "$output" --max-bytes "$OUTPUT_LIMIT" --container-id-file "$cidfile"
           statuses=("${PIPESTATUS[@]}")
           set -e
