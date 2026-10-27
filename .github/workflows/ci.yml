@@ -253,18 +253,18 @@ jobs:
               "description": "Synthetic verification item; not a production task.",
           }
           update_queue_file(queue_path, [probe])
+          record_verification_file(
+              queue_path,
+              probe["id"],
+              "PASS",
+              "CI_SYNTHETIC_PERSISTENCE_PROBE",
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          )
           record_outcome_file(
               queue_path,
               probe["id"],
               "DONE",
               "synthetic CI fixture for cross-run restore verification",
-          )
-          record_verification_file(
-              queue_path,
-              "CI-RESTORE-VERIFICATION-PROBE",
-              "PASS",
-              "CI_SYNTHETIC_PERSISTENCE_PROBE",
-              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           )
           print("Seeded synthetic DONE and verification-evidence probes into the artifact queue.")
           PY
