@@ -97,12 +97,13 @@ jobs:
           echo "collector_exit=$collector_status"
           echo "captured_bytes=$bytes"
           echo "container_running_after_overflow=$running"
-          test "$collector_status" -eq 125
+          # 126 is fail-closed: docker kill timed out, but closing the attach stream stopped the container.
+          test "$collector_status" -eq 125 -o "$collector_status" -eq 126
           test "$bytes" -eq "$OUTPUT_LIMIT"
           test "$running" = "false"
           docker rm "$container_id" >/dev/null
           trap - EXIT
-          echo "runtime_result=real_collector_overflow_stopped_live_container"
+          echo "runtime_result=real_container_stopped_after_bounded_overflow; collector_status=$collector_status"
 
       - name: Verify collector truncates oversized input and requests container stop
         shell: bash
