@@ -10,18 +10,19 @@ def token_of(queue, task_id):
     return (item.get("lease") or {}).get("token")
 
 
-def step(queue, task_id, *statuses, note="", revision=None):
+def step(queue, task_id, *statuses, note="", commit_sha=None, tree_sha=None):
     """Advance an in-memory queue through statuses as the current lease holder."""
     for status in statuses:
         queue = advance_task(queue, task_id, status, note, owner=OWNER, token=token_of(queue, task_id),
-                             revision=revision)["queue"]
+                             commit_sha=commit_sha, tree_sha=tree_sha)["queue"]
     return queue
 
 
-def step_file(path, task_id, *statuses, note="", revision=None):
+def step_file(path, task_id, *statuses, note="", commit_sha=None, tree_sha=None):
     """Advance a queue file through statuses as the current lease holder."""
     result = None
     for status in statuses:
         token = token_of(load_queue(path), task_id)
-        result = advance_task_file(path, task_id, status, note, owner=OWNER, token=token, revision=revision)
+        result = advance_task_file(path, task_id, status, note, owner=OWNER, token=token,
+                                   commit_sha=commit_sha, tree_sha=tree_sha)
     return result

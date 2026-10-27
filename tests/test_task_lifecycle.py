@@ -29,6 +29,12 @@ from lease_helpers import OWNER, step, step_file, token_of
 
 SOURCE = "autopoesis/task_queue.py"
 REVISION = "a" * 64
+COMMIT = "a" * 40
+TREE = "e" * 40
+
+
+def results_error(results_path, index):
+    return json.loads(results_path.read_text(encoding="utf-8"))["tasks"][index]["error"]
 
 
 def fresh_queue():
@@ -36,14 +42,15 @@ def fresh_queue():
 
 
 def advance(queue, *statuses):
-    return step(queue, "TASK-1", *statuses, revision=REVISION)
+    return step(queue, "TASK-1", *statuses, commit_sha=COMMIT, tree_sha=TREE)
 
 
 def attempt(queue, status):
-    return advance_task(queue, "TASK-1", status, owner=OWNER, token=token_of(queue, "TASK-1"), revision=REVISION)
+    return advance_task(queue, "TASK-1", status, owner=OWNER, token=token_of(queue, "TASK-1"),
+                        commit_sha=COMMIT, tree_sha=TREE)
 
 
-def with_verification(queue, status, source=SOURCE, revision=REVISION):
+def with_verification(queue, status, source=SOURCE, commit=COMMIT, tree=TREE):
     queue = json.loads(json.dumps(queue))
     queue["history"].append({
         "event": "VERIFICATION_RECORDED",
@@ -54,7 +61,9 @@ def with_verification(queue, status, source=SOURCE, revision=REVISION):
         "source": source,
         "lease_sha256": hashlib.sha256(token_of(queue, "TASK-1").encode()).hexdigest(),
         "attempt": next(i for i in queue["items"] if i["id"] == "TASK-1")["attempts"],
-        "revision": revision,
+        "revision": REVISION,
+        "commit_sha": commit,
+        "tree_sha": tree,
         "at": "2999-01-01T00:00:00+00:00",
     })
     return queue
@@ -218,17 +227,17 @@ class TaskLifecycleTests(unittest.TestCase):
 
     def test_pass_for_other_code_does_not_complete_the_task(self):
         in_progress = advance(fresh_queue(), "SELECTED", "IN_PROGRESS")
-        verified = with_verification(in_progress, "PASS", revision="b" * 64)
-        for revision in (REVISION, None, "not-a-digest"):
-            with self.subTest(revision=revision):
+        verified = with_verification(in_progress, "PASS", commit="b" * 40)
+        for commit, tree in ((COMMIT, TREE), (None, TREE), ("not-a-sha", TREE), ("b" * 40, None), ("b" * 40, "f" * 40)):
+            with self.subTest(commit=commit, tree=tree):
                 with self.assertRaisesRegex(EvolutionError, "no PASS verification"):
                     advance_task(verified, "TASK-1", "DONE", owner=OWNER, token=token_of(verified, "TASK-1"),
-                                 revision=revision)
+                                 commit_sha=commit, tree_sha=tree)
         done = advance_task(verified, "TASK-1", "DONE", owner=OWNER, token=token_of(verified, "TASK-1"),
-                            revision="b" * 64)["queue"]
+                            commit_sha="b" * 40, tree_sha=TREE)["queue"]
         self.assertEqual(done["items"][0]["status"], "DONE")
 
-    def test_runner_refuses_done_after_the_code_changed_since_verification(self):
+    def test_runner_pass_names_no_commit_and_runner_cannot_set_done(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             queue_path, tasks_path, results_path = (
@@ -248,18 +257,17 @@ class TaskLifecycleTests(unittest.TestCase):
             evidence = [e for e in load_queue(queue_path)["history"] if e["event"] == "VERIFICATION_RECORDED"]
             self.assertEqual(evidence[-1]["revision"], source_tree_digest(ROOT / "autopoesis"))
 
+            self.assertNotIn("commit_sha", evidence[-1])
+
             done = {"id": "done", "type": "update_task_status", "task_id": "TASK-1", "status": "DONE",
                     "lease_token": token}
-            # The checkout was restored to other code between verification and completion.
-            with mock.patch("run_tasks.source_tree_digest", return_value="c" * 64):
-                code, results = run_tasks(done)
+            code, results = run_tasks(done)
             self.assertEqual(code, 1)
-            self.assertIn("no PASS verification", results["tasks"][0]["error"])
+            self.assertIn("only by the coordinator", results["tasks"][0]["error"])
             self.assertEqual(load_queue(queue_path)["items"][0]["status"], "IN_PROGRESS")
-
-            code, _ = run_tasks(done)
-            self.assertEqual(code, 0)
-            self.assertEqual(load_queue(queue_path)["items"][0]["status"], "DONE")
+            # The runner's PASS names a directory digest, not a commit, so no commit can complete it either.
+            with self.assertRaisesRegex(EvolutionError, "no PASS verification"):
+                advance_task_file(queue_path, "TASK-1", "DONE", token=token, commit_sha=COMMIT, tree_sha=TREE)
 
     def test_source_tree_digest_follows_content_and_ignores_bytecode(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -328,7 +336,7 @@ class TaskLifecycleTests(unittest.TestCase):
             run_tasks(status("SELECTED", "s"))
             code, results = run_tasks(status("IN_PROGRESS", "p"), status("DONE", "d"))
             self.assertEqual(code, 1)
-            self.assertIn("no PASS verification", results["tasks"][1]["error"])
+            self.assertIn("only by the coordinator", results["tasks"][1]["error"])
 
             # A real PASS for task_queue.py must not be credited to an item about core.py.
             code, results = run_tasks({
@@ -348,19 +356,21 @@ class TaskLifecycleTests(unittest.TestCase):
                 "queue_task_id": "QUEUE-ITEM",
                 "lease_token": token(),
             }, status("DONE"))
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 1)
+            self.assertIn("only by the coordinator", results_error(results_path, 1))
             queue = load_queue(queue_path)
             item = next(i for i in queue["items"] if i["id"] == "QUEUE-ITEM")
-            self.assertEqual(item["status"], "DONE")
+            self.assertEqual(item["status"], "IN_PROGRESS")
             self.assertEqual(item["attempts"], 1)
             evidence = [e for e in queue["history"] if e["event"] == "VERIFICATION_RECORDED"]
             self.assertEqual([e["task_id"] for e in evidence], ["QUEUE-ITEM"])
 
+            run_tasks(status("REJECTED"))
             code, results = run_tasks(status("OPEN"))
             self.assertEqual(code, 1)
             self.assertIn("Illegal transition", results["tasks"][0]["error"])
             item = next(i for i in load_queue(queue_path)["items"] if i["id"] == "QUEUE-ITEM")
-            self.assertEqual(item["status"], "DONE")
+            self.assertEqual(item["status"], "REJECTED")
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -407,6 +417,10 @@ class WorkflowSeedProbeTests(unittest.TestCase):
         self.assertTrue(any(
             event.get("task_id") == "CI-RESTORE-VERIFICATION-PROBE" for event in queue["history"]
         ))
+        head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD", "HEAD^{tree}"],
+                              check=True, capture_output=True, text=True).stdout.split()
+        done = next(e for e in queue["history"] if e.get("task_id") == "CI-RESTORE-DONE-PROBE" and e.get("to") == "DONE")
+        self.assertEqual([done["commit_sha"], done["tree_sha"], done["revision_semantics"]], head + ["tested_commit_tree"])
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ class EvolutionCoreTests(unittest.TestCase):
             task_file = Path(directory) / "tasks.json"
             result_file = Path(directory) / "output" / "results.json"
             task_file.write_text(json.dumps({
-                "version": 2,
+                "version": 3,
                 "tasks": [{"id": "test", "type": "verify_evolution_cycle"}],
             }), encoding="utf-8")
             completed = subprocess.run(
@@ -139,7 +139,7 @@ class EvolutionCoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "TASK_QUEUE.json"
             path.write_text(json.dumps({
-                "version": 2,
+                "version": 3,
                 "items": [
                     {"id": "DUP", "status": "OPEN"},
                     {"id": "DUP", "status": "OPEN"},

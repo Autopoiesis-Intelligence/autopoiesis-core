@@ -22,11 +22,16 @@ except ImportError:  # pragma: no cover - non-POSIX platforms
 from .core import EvolutionError, canonical_json
 
 
-QUEUE_VERSION = 2
-# Version 2 records on every DONE event the revision its PASS gate accepted.
-# "migrated_v1_bound_pass_revision" marks a DONE written by version 1 code,
-# whose revision was taken from the PASS it was already bound to.
-DONE_REVISION_SEMANTICS = frozenset({"tested_source_snapshot_sha256", "migrated_v1_bound_pass_revision"})
+QUEUE_VERSION = 3
+# Version 3 binds every DONE to the commit and tree its PASS verified, labelled
+# "tested_commit_tree". Older DONE events keep the semantics they were written
+# with and are valid only inside the migrated prefix of the history, the first
+# `legacy_history_length` events; they are never upgraded.
+# "tested_source_snapshot_sha256" is a version 2 DONE: the digest of the tested
+# source directory. "migrated_v1_bound_pass_revision" is a version 1 DONE whose
+# revision was taken from the PASS it was already bound to.
+COMMIT_TREE_SEMANTICS = "tested_commit_tree"
+LEGACY_DONE_SEMANTICS = frozenset({"tested_source_snapshot_sha256", "migrated_v1_bound_pass_revision"})
 QUEUE_STATUSES = {"OPEN", "SELECTED", "IN_PROGRESS", "DONE", "REJECTED"}
 QUEUE_HISTORY_EVENTS = {"CANDIDATE_ADDED", "STATUS_CHANGED", "VERIFICATION_RECORDED", "LEASE_EXPIRED"}
 # Governed lifecycle. DONE and REJECTED are terminal. IN_PROGRESS -> OPEN is
@@ -235,8 +240,10 @@ def load_queue(path: Path) -> dict[str, Any]:
         queue = json.loads(raw_queue)
     except json.JSONDecodeError as exc:
         raise EvolutionError(f"Cannot read task queue: {exc}") from exc
-    if isinstance(queue, dict) and type(queue.get("version")) is int and queue.get("version") == 1:
-        raise EvolutionError("Task queue version 1 must be migrated first (python -m autopoesis.task_queue migrate)")
+    if isinstance(queue, dict) and type(queue.get("version")) is int and queue.get("version") in {1, 2}:
+        raise EvolutionError(
+            f"Task queue version {queue['version']} must be migrated first (python -m autopoesis.task_queue migrate)"
+        )
     return _validate_queue(queue, QUEUE_VERSION)
 
 
@@ -246,6 +253,9 @@ def _validate_queue(queue: Any, version: int, legacy_done: dict[int, str] | None
     With `legacy_done`, a DONE event that carries no revision is accepted when
     its attempt has a bound PASS, and that PASS revision is stored under the
     event's index; every other check still applies.
+    Before version 3 the whole history is legacy. In version 3 only the first
+    `legacy_history_length` events are (absent means 0), and every later DONE
+    must name the commit and tree of its bound PASS.
     """
     if (
         not isinstance(queue, dict)
@@ -255,6 +265,14 @@ def _validate_queue(queue: Any, version: int, legacy_done: dict[int, str] | None
         raise EvolutionError("Unsupported task queue format")
     if not isinstance(queue.get("items"), list) or not isinstance(queue.get("history"), list):
         raise EvolutionError("Task queue must contain items and history arrays")
+    if version < 3:
+        if "legacy_history_length" in queue:
+            raise EvolutionError(f"Task queue version {version} cannot carry legacy_history_length")
+        legacy_length = len(queue["history"])
+    else:
+        legacy_length = queue.get("legacy_history_length", 0)
+        if type(legacy_length) is not int or not 0 <= legacy_length <= len(queue["history"]):
+            raise EvolutionError("legacy_history_length must be an integer within the history")
     seen: set[str] = set()
     for item in queue["items"]:
         if (
@@ -292,6 +310,7 @@ def _validate_queue(queue: Any, version: int, legacy_done: dict[int, str] | None
     replayed_lease: dict[str, str | None] = {}
     latest_verification: dict[str, str | None] = {}
     latest_verification_revision: dict[str, str | None] = {}
+    latest_verification_commit: dict[str, tuple[str, str] | None] = {}
     for index, event in enumerate(queue["history"]):
         task_id = event.get("task_id")
         if event.get("event") == "VERIFICATION_RECORDED":
@@ -302,21 +321,22 @@ def _validate_queue(queue: Any, version: int, legacy_done: dict[int, str] | None
                     f"Queue history records verification for task {task_id!r} "
                     f"outside IN_PROGRESS (state {latest_status[task_id]!r})"
                 )
-            # The code revision cannot be compared here, because the code may have moved on
-            # since completion, but a PASS without one could never have authorized DONE.
+            # The code cannot be compared here, because it may have moved on since
+            # completion, but a PASS that names no code could never have authorized DONE.
+            has_commit = _is_git_object_id(event.get("commit_sha")) and _is_git_object_id(event.get("tree_sha"))
             bound = (
                 event.get("source") is not None
                 and event.get("source") == sources.get(task_id)
                 and event.get("attempt") == replayed_attempts.get(task_id)
-                and _is_digest(event.get("revision"))
+                and (_is_digest(event.get("revision")) or has_commit)
                 and _is_digest(event.get("lease_sha256"))
                 and event["lease_sha256"] == replayed_lease.get(task_id)
             )
+            passed = bound and event["verification_status"] == "PASS"
             latest_verification[task_id] = event["verification_status"] if bound else None
-            latest_verification_revision[task_id] = (
-                event.get("revision")
-                if bound and event["verification_status"] == "PASS"
-                else None
+            latest_verification_revision[task_id] = event.get("revision") if passed else None
+            latest_verification_commit[task_id] = (
+                (event["commit_sha"], event["tree_sha"]) if passed and has_commit else None
             )
             continue
         if event.get("event") != "STATUS_CHANGED":
@@ -336,20 +356,34 @@ def _validate_queue(queue: Any, version: int, legacy_done: dict[int, str] | None
             replayed_attempts[task_id] = replayed_attempts.get(task_id, 0) + 1
             latest_verification[task_id] = None
             latest_verification_revision[task_id] = None
+            latest_verification_commit[task_id] = None
         if event["to"] == "DONE":
             if latest_verification.get(task_id) != "PASS":
                 raise EvolutionError(
                     f"Queue history completes task {task_id!r} without a PASS for its source in that attempt"
                 )
             if legacy_done is not None and "revision" not in event and "revision_semantics" not in event:
+                if not _is_digest(latest_verification_revision.get(task_id)):
+                    raise EvolutionError(
+                        f"Queue history completes task {task_id!r} without a PASS revision in that attempt"
+                    )
                 legacy_done[index] = latest_verification_revision[task_id]
+            elif index < legacy_length:
+                if (
+                    event.get("revision_semantics") not in LEGACY_DONE_SEMANTICS
+                    or not _is_digest(event.get("revision"))
+                    or event.get("revision") != latest_verification_revision.get(task_id)
+                ):
+                    raise EvolutionError(
+                        f"Queue history DONE revision for task {task_id!r} does not match its bound PASS revision"
+                    )
             elif (
-                event.get("revision_semantics") not in DONE_REVISION_SEMANTICS
-                or not _is_digest(event.get("revision"))
-                or event.get("revision") != latest_verification_revision.get(task_id)
+                event.get("revision_semantics") != COMMIT_TREE_SEMANTICS
+                or latest_verification_commit.get(task_id) is None
+                or (event.get("commit_sha"), event.get("tree_sha")) != latest_verification_commit[task_id]
             ):
                 raise EvolutionError(
-                    f"Queue history DONE revision for task {task_id!r} does not match its bound PASS revision"
+                    f"Queue history DONE commit and tree for task {task_id!r} does not match its bound PASS"
                 )
         previous_destination = latest_status.get(task_id)
         if previous_destination is not None and event["from"] != previous_destination:
@@ -460,11 +494,24 @@ def _is_digest(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
-def _has_passing_verification(queue: dict[str, Any], item: dict[str, Any], revision: str | None) -> bool:
-    """True when the latest verification since the last IN_PROGRESS is a PASS for this source, attempt, lease and revision."""
+def _is_git_object_id(value: Any) -> bool:
+    """A full SHA-1 or SHA-256 git object id in lowercase hex."""
+    return isinstance(value, str) and len(value) in {40, 64} and all(char in "0123456789abcdef" for char in value)
+
+
+def _has_passing_verification(
+    queue: dict[str, Any], item: dict[str, Any], commit_sha: str | None, tree_sha: str | None
+) -> bool:
+    """True when the latest verification since the last IN_PROGRESS is a PASS for this source, attempt, lease, commit and tree."""
     source = item.get("source")
     token = (item.get("lease") or {}).get("token")
-    if not isinstance(source, str) or not source.strip() or token is None or not _is_digest(revision):
+    if (
+        not isinstance(source, str)
+        or not source.strip()
+        or token is None
+        or not _is_git_object_id(commit_sha)
+        or not _is_git_object_id(tree_sha)
+    ):
         return False
     latest = None
     for event in queue.get("history", []):
@@ -478,7 +525,8 @@ def _has_passing_verification(queue: dict[str, Any], item: dict[str, Any], revis
                 and event.get("attempt") == item.get("attempts")
                 and token is not None
                 and event.get("lease_sha256") == _lease_fingerprint(token)
-                and event.get("revision") == revision
+                and event.get("commit_sha") == commit_sha
+                and event.get("tree_sha") == tree_sha
             )
             latest = event.get("verification_status") if bound else None
     return latest == "PASS"
@@ -494,16 +542,18 @@ def advance_task(
     token: str | None = None,
     now: datetime | None = None,
     ttl: timedelta = LEASE_TTL,
-    revision: str | None = None,
+    commit_sha: str | None = None,
+    tree_sha: str | None = None,
 ) -> dict[str, Any]:
     """Apply one governed lifecycle transition.
 
     Entering SELECTED grants a lease to `owner`; every later change of an
     active item needs that lease's unexpired `token`. Repeating the current
     status is a no-op, but on an active item it still needs a valid token.
-    DONE also needs `revision`, the digest of the exact source snapshot named
-    by a PASS verification under the current lease. Callers must not describe
-    this as proof that a mutable live source tree is unchanged at finalization.
+    DONE also needs `commit_sha` and `tree_sha`, the git commit and tree named
+    by a PASS verification under the current lease in the current attempt. The
+    queue does not check that the tree belongs to the commit; the coordinator
+    that took the snapshot does that before it asks for DONE.
     """
     if not isinstance(status, str) or status not in QUEUE_STATUSES:
         raise EvolutionError(f"Unsupported queue status: {status!r}")
@@ -526,10 +576,10 @@ def advance_task(
         raise EvolutionError(f"Illegal transition for task {task_id!r}: {previous!r} -> {status!r}")
     if status == "IN_PROGRESS" and attempts >= MAX_ATTEMPTS:
         raise EvolutionError(f"Task {task_id!r} reached the attempt limit of {MAX_ATTEMPTS}; reject it instead")
-    if status == "DONE" and not _has_passing_verification(queue, item, revision):
+    if status == "DONE" and not _has_passing_verification(queue, item, commit_sha, tree_sha):
         raise EvolutionError(
-            f"Task {task_id!r} has no PASS verification of its own source under its current lease at revision {revision!r} "
-            "since its latest IN_PROGRESS"
+            f"Task {task_id!r} has no PASS verification of its own source under its current lease at commit "
+            f"{commit_sha!r} tree {tree_sha!r} since its latest IN_PROGRESS"
         )
     lease = item.get("lease")
     if status == "SELECTED":
@@ -545,11 +595,11 @@ def advance_task(
     if status == "SELECTED":
         updated["history"][-1]["lease_sha256"] = _lease_fingerprint(lease["token"])
     if status == "DONE":
-        # Persist the exact revision that satisfied the PASS gate on the DONE
-        # transition itself; a separate PASS event alone is not enough to make
-        # the terminal status self-describing.
-        updated["history"][-1]["revision"] = revision
-        updated["history"][-1]["revision_semantics"] = "tested_source_snapshot_sha256"
+        # Persist the exact commit and tree that satisfied the PASS gate on the
+        # DONE transition itself, so the terminal status is self-describing.
+        updated["history"][-1]["commit_sha"] = commit_sha
+        updated["history"][-1]["tree_sha"] = tree_sha
+        updated["history"][-1]["revision_semantics"] = COMMIT_TREE_SEMANTICS
     target = next(entry for entry in updated["items"] if entry["id"] == task_id)
     if status in ACTIVE_STATUSES:
         target["lease"] = lease
@@ -682,6 +732,9 @@ def record_verification_file(
     revision: str | None = None,
     token: str | None = None,
     now: datetime | None = None,
+    *,
+    commit_sha: str | None = None,
+    tree_sha: str | None = None,
 ) -> dict[str, Any]:
     """Persist verification evidence.
 
@@ -689,9 +742,10 @@ def record_verification_file(
     number captured before verification started, and be recorded by the holder
     of its current, unexpired lease. It is refused unless that exact attempt is
     still IN_PROGRESS, so a late result cannot count for a retry.
-    ``revision`` is the digest of the source snapshot that was tested; DONE
-    requires a matching PASS digest under the current lease. This queue layer
-    does not itself prove that the live source tree remains unchanged.
+    ``commit_sha`` and ``tree_sha`` name the git commit whose snapshot was
+    tested; DONE requires a PASS with the same pair under the current lease.
+    ``revision``, the digest of the tested source directory, is kept as extra
+    evidence and no longer authorizes DONE.
     """
     if not isinstance(task_id, str) or not task_id.strip():
         raise EvolutionError("Verification task_id must be a non-empty string")
@@ -709,6 +763,10 @@ def record_verification_file(
         raise EvolutionError("Verification source must be a non-empty string")
     if revision is not None and not _is_digest(revision):
         raise EvolutionError("Verification revision must be a lowercase SHA-256 hex digest")
+    if (commit_sha is None) != (tree_sha is None):
+        raise EvolutionError("Verification commit_sha and tree_sha are recorded together or not at all")
+    if commit_sha is not None and not (_is_git_object_id(commit_sha) and _is_git_object_id(tree_sha)):
+        raise EvolutionError("Verification commit_sha and tree_sha must be full lowercase hex git object ids")
     if attempt is not None and (type(attempt) is not int or attempt < 1):
         raise EvolutionError("Verification attempt must be a positive integer")
 
@@ -747,6 +805,9 @@ def record_verification_file(
             event["attempt"] = attempt
             if revision is not None:
                 event["revision"] = revision
+            if commit_sha is not None:
+                event["commit_sha"] = commit_sha
+                event["tree_sha"] = tree_sha
         updated = json.loads(canonical_json(queue))
         updated["history"].append(event)
         _write_queue_atomically(path, updated)
@@ -784,12 +845,14 @@ def advance_task_file(
     token: str | None = None,
     now: datetime | None = None,
     ttl: timedelta = LEASE_TTL,
-    revision: str | None = None,
+    commit_sha: str | None = None,
+    tree_sha: str | None = None,
 ) -> dict[str, Any]:
     """Persist a governed lifecycle transition; a no-op leaves the file untouched."""
     with queue_write_lock(path):
         result = advance_task(
-            load_queue(path), task_id, status, note, owner=owner, token=token, now=now, ttl=ttl, revision=revision
+            load_queue(path), task_id, status, note, owner=owner, token=token, now=now, ttl=ttl,
+            commit_sha=commit_sha, tree_sha=tree_sha,
         )
         if result["changed"]:
             _write_queue_atomically(path, result["queue"])
@@ -822,33 +885,42 @@ def recover_expired_leases_file(path: Path, *, now: datetime | None = None) -> d
 
 
 def migrate_queue(queue: Any) -> dict[str, Any]:
-    """Return the version 2 form of a valid version 1 queue; a version 2 queue is returned unchanged.
+    """Return the version 3 form of a valid version 1 or 2 queue; a version 3 queue is returned unchanged.
 
-    Version 1 validation already refused a DONE without a PASS bound to the
-    same source, attempt, lease and a digest revision. Migration copies that
-    PASS revision onto the DONE event and labels it as migrated, so no status
-    or evidence is upgraded. A queue that fails version 1 validation is refused.
+    Version 1 -> 2: version 1 validation already refused a DONE without a PASS
+    bound to the same source, attempt, lease and a digest revision. Migration
+    copies that PASS revision onto the DONE event and labels it as migrated.
+    Version 2 -> 3: no event changes. `legacy_history_length` is set to the
+    length of the history, so the existing DONE events keep their old semantics
+    and only they may carry it; nothing becomes "tested_commit_tree".
+    No status or evidence is upgraded. A queue that fails validation for its
+    own version is refused.
     """
-    if isinstance(queue, dict) and queue.get("version") == QUEUE_VERSION:
+    version = queue.get("version") if isinstance(queue, dict) else None
+    if version == QUEUE_VERSION:
         return _validate_queue(json.loads(canonical_json(queue)), QUEUE_VERSION)
-    legacy_done: dict[int, str] = {}
-    migrated = _validate_queue(json.loads(canonical_json(queue)), 1, legacy_done)
-    for index, revision in legacy_done.items():
-        migrated["history"][index]["revision"] = revision
-        migrated["history"][index]["revision_semantics"] = "migrated_v1_bound_pass_revision"
+    if version == 1:
+        legacy_done: dict[int, str] = {}
+        migrated = _validate_queue(json.loads(canonical_json(queue)), 1, legacy_done)
+        for index, revision in legacy_done.items():
+            migrated["history"][index]["revision"] = revision
+            migrated["history"][index]["revision_semantics"] = "migrated_v1_bound_pass_revision"
+        migrated["version"] = 2
+        queue = migrated
+    migrated = _validate_queue(json.loads(canonical_json(queue)), 2)
     migrated["version"] = QUEUE_VERSION
+    migrated["legacy_history_length"] = len(migrated["history"])
     return _validate_queue(migrated, QUEUE_VERSION)
 
 
 def migrate_queue_file(path: Path) -> dict[str, Any]:
-    """Migrate a queue file in place, keeping the version 1 bytes in `<name>.v1.bak`.
+    """Migrate a queue file in place, keeping the original bytes in `<name>.v<version>.bak`.
 
     Idempotent and restartable: the backup is written before the queue is
-    replaced, so an interrupted run leaves either the untouched version 1 file
-    with its backup or the finished version 2 file. An existing backup that
-    differs from the version 1 file is refused rather than overwritten.
+    replaced, so an interrupted run leaves either the untouched old file with
+    its backup or the finished version 3 file. An existing backup that differs
+    from the old file is refused rather than overwritten.
     """
-    backup = path.with_name(f"{path.name}.v1.bak")
     with queue_write_lock(path):
         try:
             raw = path.read_text(encoding="utf-8")
@@ -859,6 +931,7 @@ def migrate_queue_file(path: Path) -> dict[str, Any]:
             _validate_queue(parsed, QUEUE_VERSION)
             return {"migrated": False, "path": path.as_posix(), "backup": None}
         migrated = migrate_queue(parsed)
+        backup = path.with_name(f"{path.name}.v{parsed['version']}.bak")
         if backup.exists():
             if backup.read_text(encoding="utf-8") != raw:
                 raise EvolutionError(f"Migration backup {backup.as_posix()} differs from the queue; refusing to overwrite it")

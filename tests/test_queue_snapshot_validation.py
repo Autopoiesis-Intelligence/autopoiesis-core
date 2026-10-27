@@ -14,8 +14,7 @@ from autopoesis.queue_snapshot import (
     validate_queue_snapshot,
     validate_restore_source_run,
 )
-from autopoesis.executor import source_tree_digest
-from autopoesis.task_queue import load_queue, record_verification_file, update_queue_file
+from autopoesis.task_queue import advance_task_file, load_queue, record_verification_file, update_queue_file
 from run_tasks import run
 
 
@@ -23,7 +22,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
     def test_corrupt_json_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / "TASK_QUEUE.json"
-            snapshot.write_text('{"version": 2, "items": [', encoding="utf-8")
+            snapshot.write_text('{"version": 3, "items": [', encoding="utf-8")
 
             with self.assertRaises(EvolutionError):
                 load_queue(snapshot)
@@ -57,7 +56,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / "TASK_QUEUE.json"
             snapshot.write_text(json.dumps({
-                "version": 2,
+                "version": 3,
                 "items": [{"id": "TASK-1", "status": "UNKNOWN"}],
                 "history": [],
             }), encoding="utf-8")
@@ -74,7 +73,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
 
             self.assertEqual(
                 load_queue(snapshot),
-                {"version": 2, "items": [], "history": []},
+                {"version": 3, "items": [], "history": []},
             )
 
     def test_generated_test_verification_is_persisted_without_marking_task_done(self):
@@ -137,9 +136,10 @@ class QueueSnapshotValidationTests(unittest.TestCase):
             set_status("SELECTED")
             set_status("IN_PROGRESS")
             record_verification_file(queue_path, candidate["id"], "PASS", "UNIT_TEST_FIXTURE", source=candidate["source"],
-                                     attempt=1, token=lease_token(),
-                                     revision=source_tree_digest(Path(__file__).resolve().parents[1] / "autopoesis"))
-            set_status("DONE")
+                                     attempt=1, token=lease_token(), commit_sha="a" * 40, tree_sha="e" * 40)
+            # DONE is the coordinator's step; the runner only moves the other statuses.
+            advance_task_file(queue_path, candidate["id"], "DONE", "first invocation", token=lease_token(),
+                              commit_sha="a" * 40, tree_sha="e" * 40)
             after_first_run = load_queue(queue_path)
             prior_history = list(after_first_run["history"])
             self.assertEqual(after_first_run["items"][0]["status"], "DONE")

@@ -23,7 +23,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         path = Path(temporary.name) / "TASK_QUEUE.json"
         path.write_text(json.dumps({
-            "version": 2,
+            "version": 3,
             "items": [{"id": "TASK-1", "status": "DONE"}],
             "history": history,
         }), encoding="utf-8")
@@ -100,7 +100,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
 
     def test_record_outcome_rejects_invalid_note_and_attempt_count(self):
         queue = {
-            "version": 2,
+            "version": 3,
             "items": [{"id": "TASK-1", "status": "OPEN", "attempts": 0}],
             "history": [],
         }
@@ -169,16 +169,18 @@ class QueueHistoryValidationTests(unittest.TestCase):
             if end == "SELECTED":
                 event["lease_sha256"] = hashlib.sha256(b"b" * 32).hexdigest()
             if end == "DONE":
-                event["revision"] = "a" * 64
-                event["revision_semantics"] = "tested_source_snapshot_sha256"
+                event["commit_sha"] = "a" * 40
+                event["tree_sha"] = "e" * 40
+                event["revision_semantics"] = "tested_commit_tree"
             return event
 
-        def verification(status, attempt, source="tests/example.py", revision="a" * 64, lease_token="b" * 32):
+        def verification(status, attempt, source="tests/example.py", commit="a" * 40, lease_token="b" * 32):
             event = {"event": "VERIFICATION_RECORDED", "task_id": "TASK-1", "verification_status": status,
                      "verification_level": "unit", "artifact_sha256": None, "source": source,
                      "attempt": attempt, "at": "2026-01-01T00:00:03+00:00"}
-            if revision is not None:
-                event["revision"] = revision
+            if commit is not None:
+                event["commit_sha"] = commit
+                event["tree_sha"] = "e" * 40
             if lease_token is not None:
                 event["lease_sha256"] = hashlib.sha256(lease_token.encode()).hexdigest()
             return event
@@ -196,7 +198,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
             "no evidence": walk,
             "FAIL": walk + [verification("FAIL", 1)],
             "other source": walk + [verification("PASS", 1, source="other.py")],
-            "no revision": walk + [verification("PASS", 1, revision=None)],
+            "no commit": walk + [verification("PASS", 1, commit=None)],
             "other lease": walk + [verification("PASS", 1, lease_token="c" * 32)],
             "no lease token": walk + [verification("PASS", 1, lease_token=None)],
             "earlier attempt": walk + [verification("PASS", 1), edge("IN_PROGRESS", "OPEN", 3),
@@ -209,18 +211,21 @@ class QueueHistoryValidationTests(unittest.TestCase):
         path = write(walk + [verification("PASS", 1), edge("IN_PROGRESS", "DONE", 4)])
         self.assertEqual(load_queue(path)["items"][0]["status"], "DONE")
 
-        # A persisted DONE edge must identify exactly the source snapshot that passed.
+        # A persisted DONE edge must identify exactly the commit and tree that passed.
         for label, mutate in (
-            ("different revision", lambda event: event.update({"revision": "b" * 64})),
-            ("missing revision", lambda event: event.pop("revision")),
-            ("malformed revision", lambda event: event.update({"revision": "not-a-digest"})),
+            ("different commit", lambda event: event.update({"commit_sha": "b" * 40})),
+            ("different tree", lambda event: event.update({"tree_sha": "f" * 40})),
+            ("missing commit", lambda event: event.pop("commit_sha")),
+            ("malformed tree", lambda event: event.update({"tree_sha": "not-a-sha"})),
             ("missing semantics", lambda event: event.pop("revision_semantics")),
             ("wrong semantics", lambda event: event.update({"revision_semantics": "live_tree_digest"})),
+            ("legacy semantics after migration", lambda event: event.update(
+                {"revision_semantics": "tested_source_snapshot_sha256", "revision": "a" * 64})),
         ):
             with self.subTest(done_evidence=label):
                 events = walk + [verification("PASS", 1), edge("IN_PROGRESS", "DONE", 4)]
                 mutate(events[-1])
-                with self.assertRaisesRegex(EvolutionError, "DONE revision|revision_semantics"):
+                with self.assertRaisesRegex(EvolutionError, "DONE commit and tree"):
                     load_queue(write(events))
 
         # Persisted history must not change verification state after a terminal transition.
@@ -377,7 +382,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             missing_path = Path(directory) / "missing" / "TASK_QUEUE.json"
             self.assertEqual(load_queue(missing_path), {
-                "version": 2,
+                "version": 3,
                 "items": [],
                 "history": [],
             })

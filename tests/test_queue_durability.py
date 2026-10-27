@@ -40,7 +40,7 @@ class QueueDurabilityTests(unittest.TestCase):
         return self.path.read_bytes()
 
     def test_malformed_json_fails_closed_and_is_not_overwritten(self):
-        self.path.write_text('{"version": 2, "items": [', encoding="utf-8")
+        self.path.write_text('{"version": 3, "items": [', encoding="utf-8")
         original = self.path.read_bytes()
         with self.assertRaisesRegex(EvolutionError, "Cannot read task queue"):
             load_queue(self.path)

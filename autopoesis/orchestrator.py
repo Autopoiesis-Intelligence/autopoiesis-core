@@ -1,7 +1,8 @@
 """A10: one unattended cycle over the task queue, with a bounded handler.
 
-recover expired leases -> select one task the runner can execute -> IN_PROGRESS
--> run its allowlisted handler -> record verification -> DONE, OPEN or REJECTED.
+snapshot the checkout's HEAD commit -> recover expired leases -> select one task
+the runner can execute -> IN_PROGRESS -> run its allowlisted handler on the
+snapshot -> record verification with the commit and tree -> DONE, OPEN or REJECTED.
 
 Outcomes and exit codes: COMPLETED (DONE), NO_WORK and DISABLED exit 0;
 RETRYABLE_FAILURE (back to OPEN) and REJECTED exit 2; RECOVERY_REQUIRED exits 3
@@ -13,6 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing
+import subprocess
+import tarfile
 import tempfile
 import time
 from collections.abc import Callable
@@ -20,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import EvolutionError
-from .executor import source_tree_digest, verify_test_patch_in_sandbox
+from .executor import verify_test_patch_in_sandbox
 from .task_queue import (
     LEASE_TTL,
     MAX_ATTEMPTS,
@@ -69,6 +72,52 @@ def _when_unlocked(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
 
 
 MAX_RESULT_BYTES = 4 * 1024 * 1024
+GIT_TIMEOUT_SECONDS = 60
+
+
+def _git(root: Path, *args: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EvolutionError(f"git {args[0]} failed: {exc}") from exc
+    if completed.returncode != 0:
+        raise EvolutionError(f"git {args[0]} failed: {completed.stderr.strip()}")
+    return completed.stdout.strip()
+
+
+def _tree_of(root: Path, commit_sha: str) -> str:
+    return _git(root, "rev-parse", "--verify", f"{commit_sha}^{{tree}}")
+
+
+def _snapshot(root: Path, destination: Path) -> tuple[str, str, Path]:
+    """Extract the HEAD commit of the repository at `root` into `destination`.
+
+    Returns (commit_sha, tree_sha, path). The handler runs on this extraction,
+    so uncommitted or untracked files in the checkout never reach it.
+    """
+    if Path(_git(root, "rev-parse", "--show-toplevel")).resolve() != root.resolve():
+        raise EvolutionError(f"{root.as_posix()} is not the top level of a git repository")
+    commit_sha = _git(root, "rev-parse", "--verify", "HEAD^{commit}")
+    tree_sha = _tree_of(root, commit_sha)
+    archive = destination.with_suffix(".tar")
+    try:
+        with archive.open("wb") as handle:
+            completed = subprocess.run(
+                ["git", "-C", str(root), "archive", "--format=tar", commit_sha],
+                stdout=handle, stderr=subprocess.PIPE, timeout=GIT_TIMEOUT_SECONDS,
+            )
+        if completed.returncode != 0:
+            raise EvolutionError(f"git archive failed: {completed.stderr.decode(errors='replace').strip()}")
+        destination.mkdir()
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(destination, filter="data")
+    except (OSError, subprocess.TimeoutExpired, tarfile.TarError) as exc:
+        raise EvolutionError(f"Cannot snapshot commit {commit_sha}: {exc}") from exc
+    finally:
+        archive.unlink(missing_ok=True)
+    return commit_sha, tree_sha, destination
 
 
 def _run_handler(handler: Handler, item: dict[str, Any], root: Path, result_path: Path) -> None:
@@ -124,11 +173,17 @@ def run_cycle(
     result, because that all happens in a child process killed at the deadline. Each queue step
     waits at most LOCK_RETRIES * LOCK_RETRY_SECONDS for the lock and then refuses. Not covered
     by either bound: queue reads and writes in this process once a lock is held, and the
-    post-PASS source_tree_digest of the checkout. The whole cycle has no single wall-time limit.
+    git calls (each capped at GIT_TIMEOUT_SECONDS). The whole cycle has no single wall-time limit.
     The budget plus five lock waits must stay under LEASE_TTL, since the runner never renews
     its lease; a larger budget is refused before any write.
     A handler that does not finish within the budget gets no verification and no DONE. The
     result size cap limits what is accepted, not the child's memory use while it builds the result.
+
+    `repository_root` must be the top level of a git repository. Before any queue write the
+    cycle extracts its HEAD commit with `git archive`; the handler runs on that extraction,
+    and the verification and DONE name that commit and its tree. The snapshot is the code the
+    handler sees, not a limit on what the handler process may do. A root that is not a git
+    repository, or a tree that is not the commit's tree, is RECOVERY_REQUIRED.
     """
     # The runner does not renew its lease, so the whole locked part of the cycle must fit inside it.
     if not (0 < budget_seconds and budget_seconds + 5 * LOCK_RETRIES * LOCK_RETRY_SECONDS < LEASE_TTL.total_seconds()):
@@ -138,8 +193,30 @@ def run_cycle(
     handlers = HANDLERS if handlers is None else handlers
     if disable_path is not None and disable_path.exists():
         return {"status": "DISABLED", "reason": f"disable switch present at {disable_path.as_posix()}"}
-    started = clock()
     report: dict[str, Any] = {}
+    with tempfile.TemporaryDirectory(prefix="autopoesis-snapshot-") as directory:
+        try:
+            commit_sha, tree_sha, snapshot = _snapshot(repository_root, Path(directory) / "tree")
+        except EvolutionError as exc:
+            return {"status": "RECOVERY_REQUIRED", "reason": str(exc)}
+        report["commit_sha"], report["tree_sha"] = commit_sha, tree_sha
+        return _cycle(queue_path, owner, repository_root, snapshot, commit_sha, tree_sha, handlers,
+                      budget_seconds, clock, clock(), report)
+
+
+def _cycle(
+    queue_path: Path,
+    owner: str,
+    repository_root: Path,
+    snapshot: Path,
+    commit_sha: str,
+    tree_sha: str,
+    handlers: dict[str, Handler],
+    budget_seconds: float,
+    clock: Callable[[], float],
+    started: float,
+    report: dict[str, Any],
+) -> dict[str, Any]:
     try:
         report["recovered"] = _when_unlocked(recover_expired_leases_file, queue_path)["recovered"]
         # Recovery returns a task to OPEN, but one that used its last attempt would only be
@@ -163,7 +240,7 @@ def run_cycle(
         attempt = current_attempt(queue_path, task_id)
         item = next(entry for entry in load_queue(queue_path)["items"] if entry["id"] == task_id)
         report["attempt"] = attempt
-        outcome = _bounded(handlers[item["type"]], item, repository_root, budget_seconds - (clock() - started))
+        outcome = _bounded(handlers[item["type"]], item, snapshot, budget_seconds - (clock() - started))
         if outcome is not None and outcome.get("verification_status") not in {"PASS", "FAIL"}:
             outcome = {"verification_status": "FAIL", "verification_level": "HANDLER_ERROR",
                        "detail": f"handler returned verification_status {outcome.get('verification_status')!r}"}
@@ -180,18 +257,17 @@ def run_cycle(
         _when_unlocked(
             record_verification_file, queue_path, task_id, outcome["verification_status"],
             outcome.get("verification_level", "UNSPECIFIED"), outcome.get("artifact_sha256"), item["source"],
-            attempt, outcome.get("revision"), token,
+            attempt, outcome.get("revision"), token, commit_sha=commit_sha, tree_sha=tree_sha,
         )
-        tested = outcome.get("revision")
         failure = None
         if outcome["verification_status"] != "PASS":
             failure = f"verification failed: {outcome.get('detail')}"
-        elif source_tree_digest(repository_root / "autopoesis") != tested:
-            # DONE records the tested snapshot; a live tree that no longer matches it is not that code.
-            failure = "source tree does not match the tested revision"
         if failure is None:
+            # The commit and tree come from the coordinator's own snapshot, never from the handler.
+            if _tree_of(repository_root, commit_sha) != tree_sha:
+                raise EvolutionError(f"Recorded tree {tree_sha} is not the tree of commit {commit_sha}")
             _when_unlocked(advance_task_file, queue_path, task_id, "DONE", f"verified by {owner}",
-                           token=token, revision=tested)
+                           token=token, commit_sha=commit_sha, tree_sha=tree_sha)
             return {**report, "status": "COMPLETED", "final": "DONE"}
         final = "REJECTED" if attempt >= MAX_ATTEMPTS else "OPEN"
         _when_unlocked(advance_task_file, queue_path, task_id, final, failure, token=token)

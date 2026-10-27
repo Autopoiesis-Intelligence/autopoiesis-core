@@ -1,0 +1,108 @@
+{
+  "history": [
+    {
+      "at": "2026-10-27T13:35:08.086629+00:00",
+      "event": "CANDIDATE_ADDED",
+      "task_id": "T1"
+    },
+    {
+      "at": "2026-10-27T13:35:08.088379+00:00",
+      "event": "STATUS_CHANGED",
+      "from": "OPEN",
+      "lease_sha256": "fed85cafe08586bf3895f7b58eb99fd28a90e719fc6e68ff619fbf989d9637ce",
+      "note": "selected by fixture: highest priority 0, fewest attempts 0, then lowest id among 1 eligible",
+      "task_id": "T1",
+      "to": "SELECTED"
+    },
+    {
+      "at": "2026-10-27T13:35:08.089559+00:00",
+      "event": "STATUS_CHANGED",
+      "from": "SELECTED",
+      "note": "started",
+      "task_id": "T1",
+      "to": "IN_PROGRESS"
+    },
+    {
+      "artifact_sha256": null,
+      "at": "2026-10-27T13:35:08.090697+00:00",
+      "attempt": 1,
+      "event": "VERIFICATION_RECORDED",
+      "lease_sha256": "fed85cafe08586bf3895f7b58eb99fd28a90e719fc6e68ff619fbf989d9637ce",
+      "revision": "4f3e6b3a8c5390ab3c7a37c5f05f64ee935e42c6de1b597b5cb14f4c55f54f7b",
+      "source": "autopoesis/core.py",
+      "task_id": "T1",
+      "verification_level": "GENERATED_TEST_EXECUTION",
+      "verification_status": "PASS"
+    },
+    {
+      "at": "2026-10-27T13:35:08.092898+00:00",
+      "event": "STATUS_CHANGED",
+      "from": "IN_PROGRESS",
+      "note": "verified",
+      "revision": "4f3e6b3a8c5390ab3c7a37c5f05f64ee935e42c6de1b597b5cb14f4c55f54f7b",
+      "revision_semantics": "tested_source_snapshot_sha256",
+      "task_id": "T1",
+      "to": "DONE"
+    },
+    {
+      "at": "2026-10-27T13:35:08.094596+00:00",
+      "event": "CANDIDATE_ADDED",
+      "task_id": "T2"
+    },
+    {
+      "at": "2026-10-27T13:35:08.096287+00:00",
+      "event": "STATUS_CHANGED",
+      "from": "OPEN",
+      "lease_sha256": "483802dd35ea06923582e2d6eef722728fa8df133f7a4b83f0eb3d4162cd21c2",
+      "note": "selected by fixture: highest priority 0, fewest attempts 0, then lowest id among 1 eligible",
+      "task_id": "T2",
+      "to": "SELECTED"
+    },
+    {
+      "at": "2026-10-27T13:35:08.097754+00:00",
+      "event": "STATUS_CHANGED",
+      "from": "SELECTED",
+      "note": "started",
+      "task_id": "T2",
+      "to": "IN_PROGRESS"
+    },
+    {
+      "event": "VERIFICATION_RECORDED",
+      "task_id": "T2",
+      "verification_status": "PASS",
+      "verification_level": "GENERATED_TEST_EXECUTION",
+      "artifact_sha256": null,
+      "at": "2026-10-27T13:35:08.099189+00:00",
+      "source": "autopoesis/core.py",
+      "lease_sha256": "483802dd35ea06923582e2d6eef722728fa8df133f7a4b83f0eb3d4162cd21c2",
+      "attempt": 1,
+      "revision": "4f3e6b3a8c5390ab3c7a37c5f05f64ee935e42c6de1b597b5cb14f4c55f54f7b"
+    }
+  ],
+  "items": [
+    {
+      "attempts": 1,
+      "evidence": "fixture",
+      "first_seen": "2026-10-27T13:35:08.086629+00:00",
+      "id": "T1",
+      "source": "autopoesis/core.py",
+      "status": "DONE",
+      "type": "verify_test_scaffold"
+    },
+    {
+      "attempts": 1,
+      "evidence": "fixture",
+      "first_seen": "2026-10-27T13:35:08.094596+00:00",
+      "id": "T2",
+      "lease": {
+        "expires_at": "2126-10-03T13:35:08.096204+00:00",
+        "owner": "fixture",
+        "token": "bed4cb5f7f59c8d6fa4cbda8ec2bd5e3"
+      },
+      "source": "autopoesis/core.py",
+      "status": "IN_PROGRESS",
+      "type": "verify_test_scaffold"
+    }
+  ],
+  "version": 2
+}

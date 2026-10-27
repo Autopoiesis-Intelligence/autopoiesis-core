@@ -2,7 +2,6 @@
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from git_helpers import make_repository
 from autopoesis.executor import source_tree_digest
 from autopoesis.orchestrator import EXIT_CODES, HANDLERS, LOCK_RETRIES, LOCK_RETRY_SECONDS, run_cycle
 from autopoesis.task_queue import (
@@ -45,10 +45,10 @@ def failing(item, root):
 class OrchestratorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # A checkout without tests/, so the real scaffold handler has a module it may write a test for.
+        # A git repository without tests/, so the real scaffold handler has a module it may write a test for.
         cls.checkout = tempfile.TemporaryDirectory()
         cls.repo = Path(cls.checkout.name)
-        shutil.copytree(ROOT / "autopoesis", cls.repo / "autopoesis", ignore=shutil.ignore_patterns("__pycache__"))
+        cls.commit, cls.tree = make_repository(cls.repo)
 
     @classmethod
     def tearDownClass(cls):
@@ -256,35 +256,35 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout)["final"], "DONE")
 
-    def test_done_records_the_tested_revision(self):
+    def test_done_records_the_snapshot_commit_and_tree(self):
         update_queue_file(self.path, [task()])
-        run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": passing})
-        tested = self.events("VERIFICATION_RECORDED")[-1]["revision"]
+        result = run_cycle(self.path, "runner", self.repo, handlers={"verify_test_scaffold": passing})
+        self.assertEqual((result["commit_sha"], result["tree_sha"]), (self.commit, self.tree))
+        verification = self.events("VERIFICATION_RECORDED")[-1]
+        self.assertEqual((verification["commit_sha"], verification["tree_sha"]), (self.commit, self.tree))
+        self.assertEqual(verification["revision"], source_tree_digest(self.repo / "autopoesis"))
         done = [e for e in self.events("STATUS_CHANGED") if e["to"] == "DONE"]
         self.assertEqual(len(done), 1)
-        self.assertEqual((done[0]["revision"], done[0]["revision_semantics"]), (tested, "tested_source_snapshot_sha256"))
+        self.assertEqual((done[0]["commit_sha"], done[0]["tree_sha"], done[0]["revision_semantics"]),
+                         (self.commit, self.tree, "tested_commit_tree"))
 
-    def test_tree_changed_after_testing_is_not_done(self):
-        with tempfile.TemporaryDirectory() as directory:
-            repo = Path(directory)
-            shutil.copytree(ROOT / "autopoesis", repo / "autopoesis", ignore=shutil.ignore_patterns("__pycache__"))
-            update_queue_file(self.path, [task()])
-
-            def mutating(item, root):
-                result = passing(item, root)
-                (root / "autopoesis" / "late_change.py").write_text("X = 1\n", encoding="utf-8")
-                return result
-
-            result = run_cycle(self.path, "runner", repo, handlers={"verify_test_scaffold": mutating})
-        self.assertEqual((result["status"], result["final"]), ("RETRYABLE_FAILURE", "OPEN"))
-        self.assertIn("does not match the tested revision", result["reason"])
-        self.assertEqual(self.item()["status"], "OPEN")
-
-    def test_pass_without_a_revision_is_not_done(self):
+    def test_commit_named_by_the_handler_is_ignored(self):
         update_queue_file(self.path, [task()])
-        result = run_cycle(self.path, "runner", ROOT,
+
+        def claims_other_code(item, root):
+            return {**passing(item, root), "commit_sha": "b" * 40, "tree_sha": "c" * 40}
+
+        run_cycle(self.path, "runner", self.repo, handlers={"verify_test_scaffold": claims_other_code})
+        done = [e for e in self.events("STATUS_CHANGED") if e["to"] == "DONE"]
+        self.assertEqual((done[0]["commit_sha"], done[0]["tree_sha"]), (self.commit, self.tree))
+
+    def test_pass_without_a_revision_is_bound_by_the_commit(self):
+        # The directory digest is extra evidence now; the commit and tree from the snapshot authorize DONE.
+        update_queue_file(self.path, [task()])
+        result = run_cycle(self.path, "runner", self.repo,
                            handlers={"verify_test_scaffold": lambda item, root: {"verification_status": "PASS"}})
-        self.assertEqual((result["status"], result["final"]), ("RETRYABLE_FAILURE", "OPEN"))
+        self.assertEqual((result["status"], result["final"]), ("COMPLETED", "DONE"))
+        self.assertNotIn("revision", self.events("VERIFICATION_RECORDED")[-1])
 
     def test_lease_expired_on_the_last_attempt_is_rejected(self):
         update_queue_file(self.path, [task()])

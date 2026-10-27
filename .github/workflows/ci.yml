@@ -240,8 +240,9 @@ jobs:
         if: ${{ inputs.seed_done_probe }}
         run: |
           python - <<'PY'
+          import subprocess
           from pathlib import Path
-          from autopoesis.executor import source_tree_digest
+          from autopoesis import task_queue
           from autopoesis.task_queue import (
               advance_task_file,
               current_attempt,
@@ -259,16 +260,22 @@ jobs:
           }
           update_queue_file(queue_path, [probe])
           note = "synthetic CI fixture for cross-run restore verification"
-          revision = source_tree_digest(Path("autopoesis"))
+          # The probe names the exact commit and tree of this run's checkout; it is still a synthetic PASS.
+          checkout = Path(task_queue.__file__).resolve().parents[1]
+          def git(*args):
+              return subprocess.run(["git", "-C", str(checkout), *args], check=True, capture_output=True,
+                                    text=True).stdout.strip()
+          commit_sha = git("rev-parse", "--verify", "HEAD^{commit}")
+          tree_sha = git("rev-parse", "--verify", commit_sha + "^{tree}")
           # Walk the governed lifecycle: DONE is accepted only after a PASS since IN_PROGRESS.
           token = advance_task_file(queue_path, probe["id"], "SELECTED", note, owner="ci-seed-probe")["lease"]["token"]
           advance_task_file(queue_path, probe["id"], "IN_PROGRESS", note, token=token)
           record_verification_file(
               queue_path, probe["id"], "PASS", "CI_SYNTHETIC_PERSISTENCE_PROBE",
-              source=probe["source"], attempt=current_attempt(queue_path, probe["id"]), revision=revision,
-              token=token,
+              source=probe["source"], attempt=current_attempt(queue_path, probe["id"]), token=token,
+              commit_sha=commit_sha, tree_sha=tree_sha,
           )
-          advance_task_file(queue_path, probe["id"], "DONE", note, token=token, revision=revision)
+          advance_task_file(queue_path, probe["id"], "DONE", note, token=token, commit_sha=commit_sha, tree_sha=tree_sha)
           record_verification_file(
               queue_path,
               "CI-RESTORE-VERIFICATION-PROBE",

@@ -27,7 +27,8 @@ from autopoesis.task_queue import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "autopoesis/task_queue.py"
-REVISION = "a" * 64
+COMMIT = "a" * 40
+TREE = "e" * 40
 LATER = datetime.now(timezone.utc) + LEASE_TTL + timedelta(hours=1)
 
 CRASHING_EXECUTOR = textwrap.dedent("""
@@ -135,7 +136,8 @@ class TaskLeaseTests(unittest.TestCase):
             lambda: renew_lease_file(self.path, "TASK-1", old_token, now=LATER),
             lambda: record_verification_file(self.path, "TASK-1", "PASS", "unit", source=SOURCE,
                                              attempt=1, token=old_token, now=LATER),
-            lambda: advance_task_file(self.path, "TASK-1", "DONE", token=old_token, now=LATER, revision=REVISION),
+            lambda: advance_task_file(self.path, "TASK-1", "DONE", token=old_token, now=LATER,
+                                      commit_sha=COMMIT, tree_sha=TREE),
             lambda: advance_task_file(self.path, "TASK-1", "IN_PROGRESS", token=old_token, now=LATER),
         ]
         for index, call in enumerate(attempts):
@@ -146,10 +148,12 @@ class TaskLeaseTests(unittest.TestCase):
 
         # T8: the current holder finishes only with its own PASS.
         with self.assertRaisesRegex(EvolutionError, "no PASS verification"):
-            advance_task_file(self.path, "TASK-1", "DONE", token=new_token, now=LATER, revision=REVISION)
-        record_verification_file(self.path, "TASK-1", "PASS", "unit", source=SOURCE, attempt=2, revision=REVISION,
-                                 token=new_token, now=LATER)
-        advance_task_file(self.path, "TASK-1", "DONE", token=new_token, now=LATER, revision=REVISION)
+            advance_task_file(self.path, "TASK-1", "DONE", token=new_token, now=LATER,
+                              commit_sha=COMMIT, tree_sha=TREE)
+        record_verification_file(self.path, "TASK-1", "PASS", "unit", source=SOURCE, attempt=2, token=new_token,
+                                 now=LATER, commit_sha=COMMIT, tree_sha=TREE)
+        advance_task_file(self.path, "TASK-1", "DONE", token=new_token, now=LATER,
+                          commit_sha=COMMIT, tree_sha=TREE)
         done = item(self.path)
         self.assertEqual(done["status"], "DONE")
         self.assertNotIn("lease", done)
@@ -157,9 +161,9 @@ class TaskLeaseTests(unittest.TestCase):
     def test_restored_pass_must_carry_the_token_leased_for_that_attempt(self):
         token = self.acquire("executor-A")
         advance_task_file(self.path, "TASK-1", "IN_PROGRESS", token=token)
-        record_verification_file(self.path, "TASK-1", "PASS", "unit", source=SOURCE, attempt=1, revision=REVISION,
-                                 token=token)
-        advance_task_file(self.path, "TASK-1", "DONE", token=token, revision=REVISION)
+        record_verification_file(self.path, "TASK-1", "PASS", "unit", source=SOURCE, attempt=1, token=token,
+                                 commit_sha=COMMIT, tree_sha=TREE)
+        advance_task_file(self.path, "TASK-1", "DONE", token=token, commit_sha=COMMIT, tree_sha=TREE)
         self.assertEqual(item(self.path)["status"], "DONE")
         queue = json.loads(self.path.read_text(encoding="utf-8"))
         selected = next(e for e in queue["history"] if e["event"] == "STATUS_CHANGED" and e["to"] == "SELECTED")
