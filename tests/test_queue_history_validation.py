@@ -229,10 +229,21 @@ class QueueHistoryValidationTests(unittest.TestCase):
                 "type": "proposal",
                 "description": "test",
             }])
+            with self.assertRaisesRegex(EvolutionError, "without a matching latest PASS verification"):
+                record_outcome_file(path, "TASK-1", "DONE", "must fail closed")
+
+            record_verification_file(
+                path,
+                "TASK-1",
+                "PASS",
+                "GENERATED_TEST_EXECUTION",
+                "b" * 64,
+            )
             record_outcome_file(path, "TASK-1", "DONE", "test transition")
             queue = load_queue(path)
             self.assertEqual([event["event"] for event in queue["history"]], [
                 "CANDIDATE_ADDED",
+                "VERIFICATION_RECORDED",
                 "STATUS_CHANGED",
             ])
 
@@ -240,6 +251,13 @@ class QueueHistoryValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "TASK_QUEUE.json"
             update_queue_file(path, [{"id": "TASK-1", "type": "proposal"}])
+            record_verification_file(
+                path,
+                "TASK-1",
+                "PASS",
+                "GENERATED_TEST_EXECUTION",
+                "c" * 64,
+            )
             original_bytes = path.read_bytes()
 
             with patch("autopoesis.task_queue.os.replace", side_effect=OSError("disk error")):
