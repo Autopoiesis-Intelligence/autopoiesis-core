@@ -105,6 +105,46 @@ jobs:
           trap - EXIT
           echo "runtime_result=real_container_stopped_after_bounded_overflow; collector_status=$collector_status"
 
+      - name: Verify killing the sandbox stops its descendant processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/descendant-probe"
+          mkdir -p "$probe/pids"
+          chmod 0777 "$probe/pids"
+          cidfile="$probe/container.id"
+          rm -f "$cidfile" "$probe/pids/"*
+          docker pull --quiet "$TEST_IMAGE"
+          docker run -d --cidfile "$cidfile" --network none --read-only \
+            --tmpfs /tmp:size=2m,nosuid,nodev --mount "type=bind,source=$probe/pids,target=/pids" \
+            --user 65534:65534 --cpus 0.5 --memory 128m --memory-swap 128m --pids-limit 32 \
+            --cap-drop ALL --security-opt no-new-privileges --log-driver=none \
+            "$TEST_IMAGE" sh -c 'sleep 120 & echo $! >/pids/child1.pid; sleep 120 & echo $! >/pids/child2.pid; wait' >/dev/null
+          container_id="$(cat "$cidfile")"
+          cleanup() { docker rm -f "$container_id" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          for _ in $(seq 1 50); do
+            [[ -s "$probe/pids/child1.pid" && -s "$probe/pids/child2.pid" ]] && break
+            sleep 0.1
+          done
+          test -s "$probe/pids/child1.pid"
+          test -s "$probe/pids/child2.pid"
+          child1="$(cat "$probe/pids/child1.pid")"
+          child2="$(cat "$probe/pids/child2.pid")"
+          docker kill "$container_id" >/dev/null
+          running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
+          echo "descendant_pid_1=$child1"
+          echo "descendant_pid_2=$child2"
+          echo "container_running_after_kill=$running"
+          test "$running" = "false"
+          if docker top "$container_id" >/dev/null 2>&1; then
+            echo "::error::Container still exposes a process table after kill."
+            exit 1
+          fi
+          docker rm "$container_id" >/dev/null
+          trap - EXIT
+          echo "runtime_result=container_and_descendants_stopped"
+
       - name: Verify collector truncates oversized input and requests container stop
         shell: bash
         run: |
