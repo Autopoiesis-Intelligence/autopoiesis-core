@@ -250,6 +250,7 @@ jobs:
           docker pull --quiet "$TEST_IMAGE"
           set +e
           timeout --signal=TERM --kill-after=5s 120s docker run --rm --cidfile "$RUNNER_TEMP/test-container.id" --network none --read-only --tmpfs /tmp --user 65534:65534 \
+            --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
             --cap-drop ALL --security-opt no-new-privileges -e PYTHONDONTWRITEBYTECODE=1 \
             -v "$sandbox":/work:ro -w /work "$TEST_IMAGE" \
             python -m unittest -v "$module" 2>&1 | python scripts/capture_bounded_output.py "$RUNNER_TEMP/test-output.txt" --max-bytes 1048576 --container-id-file "$RUNNER_TEMP/test-container.id"
