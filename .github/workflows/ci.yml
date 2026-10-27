@@ -171,7 +171,7 @@ jobs:
               rebind(b'{"version": 1, "items": [')
           elif fault == "bad_version":
               queue = json.loads(snapshot.read_text(encoding="utf-8"))
-              queue["version"] = 2
+              queue["version"] = 999
               rebind(json.dumps(queue).encode("utf-8"))
           elif fault == "bad_history":
               queue = json.loads(snapshot.read_text(encoding="utf-8"))
