@@ -41,15 +41,21 @@ def main() -> int:
     args = parser.parse_args()
     total, exceeded = capture_bounded(sys.stdin.buffer, args.destination, args.max_bytes)
     if exceeded:
-        if args.container_id_file and args.container_id_file.is_file():
-            try:
-                container_id = args.container_id_file.read_text(encoding="ascii").strip()
-                if container_id:
-                    subprocess.run(["docker", "kill", container_id], timeout=5, check=False,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except (OSError, subprocess.SubprocessError):
-                print("ERROR: failed to confirm container termination; workflow must fail closed", file=sys.stderr)
-                return 126
+        try:
+            if not args.container_id_file or not args.container_id_file.is_file():
+                raise OSError("container ID file is missing")
+            container_id = args.container_id_file.read_text(encoding="ascii").strip()
+            if not container_id:
+                raise OSError("container ID file is empty")
+            stopped = subprocess.run(
+                ["docker", "kill", container_id], timeout=5, check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if stopped.returncode != 0:
+                raise subprocess.CalledProcessError(stopped.returncode, ["docker", "kill", container_id])
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"ERROR: unable to stop overflowing test container: {exc}", file=sys.stderr)
+            return 126
         print(f"ERROR: output exceeded {args.max_bytes} bytes; captured {total}", file=sys.stderr)
         return 125
     print(f"Captured {total} bytes (limit {args.max_bytes})", file=sys.stderr)
