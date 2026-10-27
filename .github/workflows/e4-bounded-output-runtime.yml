@@ -1,0 +1,175 @@
+name: E4 bounded-output runtime probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/e4-bounded-output-runtime.yml'
+      - '.github/workflows/copilot-test-writer.yml'
+      - 'scripts/capture_bounded_output.py'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  bounded-output-runtime:
+    name: Verify container-side output cap under a flood
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    env:
+      TEST_IMAGE: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+      OUTPUT_LIMIT: "1048576"
+    steps:
+      - name: Checkout reviewed branch without credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Flood a container-local file with an OS file-size limit
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/runtime-probe-output.txt"
+          flood_dir="$RUNNER_TEMP/runtime-probe-flood"
+          raw_output="$flood_dir/flood.txt"
+          cidfile="$RUNNER_TEMP/runtime-probe-container.id"
+          rm -rf "$flood_dir"
+          mkdir -p "$flood_dir"
+          chmod 0777 "$flood_dir"
+          rm -f "$output" "$cidfile"
+          docker pull --quiet "$TEST_IMAGE"
+
+          set +e
+          docker run --cidfile "$cidfile" \
+            --network none --read-only --tmpfs /tmp:size=2m,nosuid,nodev \
+            --mount "type=bind,source=$flood_dir,target=/out" --user 65534:65534 \
+            --cpus 0.5 --memory 256m --memory-swap 256m --pids-limit 64 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            "$TEST_IMAGE" sh -c 'touch /out/flood.txt; ulimit -f 2048; python -c "import signal,sys; signal.signal(signal.SIGXFSZ, signal.SIG_IGN); f=open(\"/out/flood.txt\",\"ab\"); chunk=b\"X\"*65536; exec(\"try:\\n while True:\\n  f.write(chunk); f.flush()\\nexcept OSError:\\n f.close(); sys.exit(23)\")"'
+          test_status=$?
+          set -e
+
+          test -s "$cidfile"
+          container_id="$(cat "$cidfile")"
+          cat "$raw_output" | python scripts/capture_bounded_output.py "$output" --max-bytes "$OUTPUT_LIMIT"
+          bytes="$(wc -c < "$output")"
+          running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
+          echo "container_exit=$test_status"
+          echo "captured_bytes=$bytes"
+          echo "limit_bytes=$OUTPUT_LIMIT"
+          echo "container_running=$running"
+
+          test "$test_status" -ne 0
+          test "$bytes" -le "$OUTPUT_LIMIT"
+          test "$bytes" -gt 0
+          test "$running" = "false"
+          docker rm "$container_id" >/dev/null
+          echo "runtime_result=container_output_capped_and_process_exited"
+
+      - name: Verify real collector overflow stops a live Docker container
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/real-overflow-probe"
+          mkdir -p "$probe"
+          cidfile="$probe/container.id"
+          output="$probe/captured.bin"
+          rm -f "$cidfile" "$output"
+          docker pull --quiet "$TEST_IMAGE"
+          docker run -d --cidfile "$cidfile" --network none --read-only \
+            --tmpfs /tmp:size=2m,nosuid,nodev --user 65534:65534 \
+            --cpus 0.5 --memory 128m --memory-swap 128m --pids-limit 32 \
+            --cap-drop ALL --security-opt no-new-privileges --log-driver=none \
+            "$TEST_IMAGE" python -c 'import os; chunk=b"Z"*65536; exec("while True:\n os.write(1, chunk)")' >/dev/null
+          container_id="$(cat "$cidfile")"
+          cleanup() { docker rm -f "$container_id" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          set +e
+          docker attach --no-stdin --sig-proxy=false "$container_id" \
+            | python scripts/capture_bounded_output.py "$output" --max-bytes "$OUTPUT_LIMIT" --container-id-file "$cidfile"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          attach_status="${statuses[0]}"
+          collector_status="${statuses[1]}"
+          bytes="$(wc -c < "$output")"
+          running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
+          echo "attach_exit=$attach_status"
+          echo "collector_exit=$collector_status"
+          echo "captured_bytes=$bytes"
+          echo "container_running_after_overflow=$running"
+          # 126 is fail-closed: docker kill timed out, but closing the attach stream stopped the container.
+          test "$collector_status" -eq 125 -o "$collector_status" -eq 126
+          test "$bytes" -eq "$OUTPUT_LIMIT"
+          test "$running" = "false"
+          docker rm "$container_id" >/dev/null
+          trap - EXIT
+          echo "runtime_result=real_container_stopped_after_bounded_overflow; collector_status=$collector_status"
+
+      - name: Verify killing the sandbox stops its descendant processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/descendant-probe"
+          mkdir -p "$probe/pids"
+          chmod 0777 "$probe/pids"
+          cidfile="$probe/container.id"
+          rm -f "$cidfile" "$probe/pids/"*
+          docker pull --quiet "$TEST_IMAGE"
+          docker run -d --cidfile "$cidfile" --network none --read-only \
+            --tmpfs /tmp:size=2m,nosuid,nodev --mount "type=bind,source=$probe/pids,target=/pids" \
+            --user 65534:65534 --cpus 0.5 --memory 128m --memory-swap 128m --pids-limit 32 \
+            --cap-drop ALL --security-opt no-new-privileges --log-driver=none \
+            "$TEST_IMAGE" sh -c 'sleep 120 & echo $! >/pids/child1.pid; sleep 120 & echo $! >/pids/child2.pid; wait' >/dev/null
+          container_id="$(cat "$cidfile")"
+          cleanup() { docker rm -f "$container_id" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          for _ in $(seq 1 50); do
+            [[ -s "$probe/pids/child1.pid" && -s "$probe/pids/child2.pid" ]] && break
+            sleep 0.1
+          done
+          test -s "$probe/pids/child1.pid"
+          test -s "$probe/pids/child2.pid"
+          child1="$(cat "$probe/pids/child1.pid")"
+          child2="$(cat "$probe/pids/child2.pid")"
+          docker kill "$container_id" >/dev/null
+          running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
+          echo "descendant_pid_1=$child1"
+          echo "descendant_pid_2=$child2"
+          echo "container_running_after_kill=$running"
+          test "$running" = "false"
+          if docker top "$container_id" >/dev/null 2>&1; then
+            echo "::error::Container still exposes a process table after kill."
+            exit 1
+          fi
+          docker rm "$container_id" >/dev/null
+          trap - EXIT
+          echo "runtime_result=container_and_descendants_stopped"
+
+      - name: Verify collector truncates oversized input and requests container stop
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/collector-overflow-probe"
+          mkdir -p "$probe/bin"
+          printf 'test-container-id\n' > "$probe/container.id"
+          head -c 1048577 /dev/zero > "$probe/oversized.bin"
+          cat > "$probe/bin/docker" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          printf '%s\n' "$*" >> "$DOCKER_CALL_LOG"
+          [[ "$#" -eq 2 && "$1" == "kill" && "$2" == "test-container-id" ]]
+          SH
+          chmod +x "$probe/bin/docker"
+          export DOCKER_CALL_LOG="$probe/docker-call.log"
+          set +e
+          PATH="$probe/bin:$PATH" python scripts/capture_bounded_output.py "$probe/captured.bin" --max-bytes 1048576 --container-id-file "$probe/container.id" < "$probe/oversized.bin"
+          status=$?
+          set -e
+          bytes="$(wc -c < "$probe/captured.bin")"
+          echo "collector_exit=$status"
+          echo "collector_captured_bytes=$bytes"
+          echo "stop_request=$(cat "$probe/docker-call.log")"
+          test "$status" -eq 125
+          test "$bytes" -eq 1048576
+          grep -Fxq 'kill test-container-id' "$probe/docker-call.log"
+          echo "collector_result=bounded_and_stop_requested"

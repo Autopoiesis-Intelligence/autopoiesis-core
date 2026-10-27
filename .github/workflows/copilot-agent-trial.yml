@@ -90,6 +90,8 @@ jobs:
           CREDIT_CAP: ${{ steps.budget.outputs.cap }}
         run: |
           set -euo pipefail
+          # Bound redirected CLI output files before invoking the token-bearing CLI; 4096 blocks = 2 MiB.
+          ulimit -f 4096
           mkdir -p "$RUNNER_TEMP/budget"
           stderr_file="$RUNNER_TEMP/budget/stderr.txt"
           usage_file="$RUNNER_TEMP/budget/usage.json"
