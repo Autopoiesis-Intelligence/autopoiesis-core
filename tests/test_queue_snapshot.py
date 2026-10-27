@@ -27,7 +27,7 @@ class QueueSnapshotTests(unittest.TestCase):
         self.snapshot = self.root / "TASK_QUEUE.json"
         self.manifest = self.root / "QUEUE_SNAPSHOT_MANIFEST.json"
         self.snapshot.write_text(
-            json.dumps({"version": 1, "items": [], "history": []}) + "\n",
+            json.dumps({"version": 2, "items": [], "history": []}) + "\n",
             encoding="utf-8",
         )
 
@@ -85,7 +85,7 @@ class QueueSnapshotTests(unittest.TestCase):
             source_head_sha=SHA,
             source_repository=REPOSITORY,
         )
-        self.assertEqual(result["queue"], {"version": 1, "items": [], "history": []})
+        self.assertEqual(result["queue"], {"version": 2, "items": [], "history": []})
         self.assertEqual(result["task_queue_sha256"], manifest["task_queue_sha256"])
 
     def test_manifest_rejects_wrong_run_sha_or_repository(self):

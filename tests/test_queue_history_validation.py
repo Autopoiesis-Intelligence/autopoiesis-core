@@ -23,7 +23,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         path = Path(temporary.name) / "TASK_QUEUE.json"
         path.write_text(json.dumps({
-            "version": 1,
+            "version": 2,
             "items": [{"id": "TASK-1", "status": "DONE"}],
             "history": history,
         }), encoding="utf-8")
@@ -100,7 +100,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
 
     def test_record_outcome_rejects_invalid_note_and_attempt_count(self):
         queue = {
-            "version": 1,
+            "version": 2,
             "items": [{"id": "TASK-1", "status": "OPEN", "attempts": 0}],
             "history": [],
         }
@@ -168,6 +168,9 @@ class QueueHistoryValidationTests(unittest.TestCase):
                      "note": "", "at": f"2026-01-01T00:00:0{second}+00:00"}
             if end == "SELECTED":
                 event["lease_sha256"] = hashlib.sha256(b"b" * 32).hexdigest()
+            if end == "DONE":
+                event["revision"] = "a" * 64
+                event["revision_semantics"] = "tested_source_snapshot_sha256"
             return event
 
         def verification(status, attempt, source="tests/example.py", revision="a" * 64, lease_token="b" * 32):
@@ -205,6 +208,20 @@ class QueueHistoryValidationTests(unittest.TestCase):
                     load_queue(write(events + [edge("IN_PROGRESS", "DONE", 4)]))
         path = write(walk + [verification("PASS", 1), edge("IN_PROGRESS", "DONE", 4)])
         self.assertEqual(load_queue(path)["items"][0]["status"], "DONE")
+
+        # A persisted DONE edge must identify exactly the source snapshot that passed.
+        for label, mutate in (
+            ("different revision", lambda event: event.update({"revision": "b" * 64})),
+            ("missing revision", lambda event: event.pop("revision")),
+            ("malformed revision", lambda event: event.update({"revision": "not-a-digest"})),
+            ("missing semantics", lambda event: event.pop("revision_semantics")),
+            ("wrong semantics", lambda event: event.update({"revision_semantics": "live_tree_digest"})),
+        ):
+            with self.subTest(done_evidence=label):
+                events = walk + [verification("PASS", 1), edge("IN_PROGRESS", "DONE", 4)]
+                mutate(events[-1])
+                with self.assertRaisesRegex(EvolutionError, "DONE revision|revision_semantics"):
+                    load_queue(write(events))
 
         # Persisted history must not change verification state after a terminal transition.
         post_done_failure = verification("FAIL", 1)
@@ -360,7 +377,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             missing_path = Path(directory) / "missing" / "TASK_QUEUE.json"
             self.assertEqual(load_queue(missing_path), {
-                "version": 1,
+                "version": 2,
                 "items": [],
                 "history": [],
             })

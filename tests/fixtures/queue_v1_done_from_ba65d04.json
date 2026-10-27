@@ -1,0 +1,59 @@
+{
+  "history": [
+    {
+      "at": "2026-10-27T01:55:52.080113+00:00",
+      "event": "CANDIDATE_ADDED",
+      "task_id": "T1"
+    },
+    {
+      "at": "2026-10-27T01:55:52.082451+00:00",
+      "event": "STATUS_CHANGED",
+      "from": "OPEN",
+      "lease_sha256": "6ffe175cd4e13b188d802cf4401e7d26872f18dbf9132061f1e4365bb08e1857",
+      "note": "selected by probe: highest priority 0, fewest attempts 0, then lowest id among 1 eligible",
+      "task_id": "T1",
+      "to": "SELECTED"
+    },
+    {
+      "at": "2026-10-27T01:55:52.086683+00:00",
+      "event": "STATUS_CHANGED",
+      "from": "SELECTED",
+      "note": "started by probe",
+      "task_id": "T1",
+      "to": "IN_PROGRESS"
+    },
+    {
+      "artifact_sha256": "3a76b7e41bf4aed18ce0f3e5e8f38d0441717a0093245e2995f08c4df300c030",
+      "at": "2026-10-27T01:55:52.203525+00:00",
+      "attempt": 1,
+      "event": "VERIFICATION_RECORDED",
+      "lease_sha256": "6ffe175cd4e13b188d802cf4401e7d26872f18dbf9132061f1e4365bb08e1857",
+      "revision": "9b11e31b2a3a75ce736d3dacbc2eca20262173cb6804d1056523b5e783cc3893",
+      "source": "autopoesis/probe_mod.py",
+      "task_id": "T1",
+      "verification_level": "GENERATED_TEST_EXECUTION",
+      "verification_status": "PASS"
+    },
+    {
+      "event": "STATUS_CHANGED",
+      "task_id": "T1",
+      "from": "IN_PROGRESS",
+      "to": "DONE",
+      "note": "verified by probe",
+      "at": "2026-10-27T01:55:52.206967+00:00"
+    }
+  ],
+  "items": [
+    {
+      "attempts": 1,
+      "description": "x",
+      "evidence": "probe",
+      "first_seen": "2026-10-27T01:55:52.080113+00:00",
+      "id": "T1",
+      "source": "autopoesis/probe_mod.py",
+      "status": "DONE",
+      "type": "verify_test_scaffold"
+    }
+  ],
+  "version": 1
+}

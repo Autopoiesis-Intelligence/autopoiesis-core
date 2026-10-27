@@ -23,7 +23,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
     def test_corrupt_json_snapshot_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / "TASK_QUEUE.json"
-            snapshot.write_text('{"version": 1, "items": [', encoding="utf-8")
+            snapshot.write_text('{"version": 2, "items": [', encoding="utf-8")
 
             with self.assertRaises(EvolutionError):
                 load_queue(snapshot)
@@ -57,7 +57,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / "TASK_QUEUE.json"
             snapshot.write_text(json.dumps({
-                "version": 1,
+                "version": 2,
                 "items": [{"id": "TASK-1", "status": "UNKNOWN"}],
                 "history": [],
             }), encoding="utf-8")
@@ -74,7 +74,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
 
             self.assertEqual(
                 load_queue(snapshot),
-                {"version": 1, "items": [], "history": []},
+                {"version": 2, "items": [], "history": []},
             )
 
     def test_generated_test_verification_is_persisted_without_marking_task_done(self):

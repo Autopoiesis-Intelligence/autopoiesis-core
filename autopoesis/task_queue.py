@@ -22,7 +22,11 @@ except ImportError:  # pragma: no cover - non-POSIX platforms
 from .core import EvolutionError, canonical_json
 
 
-QUEUE_VERSION = 1
+QUEUE_VERSION = 2
+# Version 2 records on every DONE event the revision its PASS gate accepted.
+# "migrated_v1_bound_pass_revision" marks a DONE written by version 1 code,
+# whose revision was taken from the PASS it was already bound to.
+DONE_REVISION_SEMANTICS = frozenset({"tested_source_snapshot_sha256", "migrated_v1_bound_pass_revision"})
 QUEUE_STATUSES = {"OPEN", "SELECTED", "IN_PROGRESS", "DONE", "REJECTED"}
 QUEUE_HISTORY_EVENTS = {"CANDIDATE_ADDED", "STATUS_CHANGED", "VERIFICATION_RECORDED", "LEASE_EXPIRED"}
 # Governed lifecycle. DONE and REJECTED are terminal. IN_PROGRESS -> OPEN is
@@ -93,8 +97,11 @@ def _lease_problem(item: dict[str, Any], token: Any, now: datetime) -> str | Non
 
 def _write_queue_atomically(path: Path, queue: dict[str, Any]) -> None:
     """Write a complete queue snapshot before atomically replacing the old one."""
+    _write_text_atomically(path, json.dumps(queue, indent=2, ensure_ascii=False) + "\n")
+
+
+def _write_text_atomically(path: Path, serialized: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = json.dumps(queue, indent=2, ensure_ascii=False) + "\n"
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
@@ -228,10 +235,22 @@ def load_queue(path: Path) -> dict[str, Any]:
         queue = json.loads(raw_queue)
     except json.JSONDecodeError as exc:
         raise EvolutionError(f"Cannot read task queue: {exc}") from exc
+    if isinstance(queue, dict) and type(queue.get("version")) is int and queue.get("version") == 1:
+        raise EvolutionError("Task queue version 1 must be migrated first (python -m autopoesis.task_queue migrate)")
+    return _validate_queue(queue, QUEUE_VERSION)
+
+
+def _validate_queue(queue: Any, version: int, legacy_done: dict[int, str] | None = None) -> dict[str, Any]:
+    """Validate a parsed queue of `version`.
+
+    With `legacy_done`, a DONE event that carries no revision is accepted when
+    its attempt has a bound PASS, and that PASS revision is stored under the
+    event's index; every other check still applies.
+    """
     if (
         not isinstance(queue, dict)
         or type(queue.get("version")) is not int
-        or queue.get("version") != QUEUE_VERSION
+        or queue.get("version") != version
     ):
         raise EvolutionError("Unsupported task queue format")
     if not isinstance(queue.get("items"), list) or not isinstance(queue.get("history"), list):
@@ -272,7 +291,8 @@ def load_queue(path: Path) -> dict[str, Any]:
     replayed_attempts: dict[str, int] = {}
     replayed_lease: dict[str, str | None] = {}
     latest_verification: dict[str, str | None] = {}
-    for event in queue["history"]:
+    latest_verification_revision: dict[str, str | None] = {}
+    for index, event in enumerate(queue["history"]):
         task_id = event.get("task_id")
         if event.get("event") == "VERIFICATION_RECORDED":
             # record_verification only writes while the task is IN_PROGRESS, so evidence
@@ -293,6 +313,11 @@ def load_queue(path: Path) -> dict[str, Any]:
                 and event["lease_sha256"] == replayed_lease.get(task_id)
             )
             latest_verification[task_id] = event["verification_status"] if bound else None
+            latest_verification_revision[task_id] = (
+                event.get("revision")
+                if bound and event["verification_status"] == "PASS"
+                else None
+            )
             continue
         if event.get("event") != "STATUS_CHANGED":
             continue
@@ -310,10 +335,22 @@ def load_queue(path: Path) -> dict[str, Any]:
                 )
             replayed_attempts[task_id] = replayed_attempts.get(task_id, 0) + 1
             latest_verification[task_id] = None
-        if event["to"] == "DONE" and latest_verification.get(task_id) != "PASS":
-            raise EvolutionError(
-                f"Queue history completes task {task_id!r} without a PASS for its source in that attempt"
-            )
+            latest_verification_revision[task_id] = None
+        if event["to"] == "DONE":
+            if latest_verification.get(task_id) != "PASS":
+                raise EvolutionError(
+                    f"Queue history completes task {task_id!r} without a PASS for its source in that attempt"
+                )
+            if legacy_done is not None and "revision" not in event and "revision_semantics" not in event:
+                legacy_done[index] = latest_verification_revision[task_id]
+            elif (
+                event.get("revision_semantics") not in DONE_REVISION_SEMANTICS
+                or not _is_digest(event.get("revision"))
+                or event.get("revision") != latest_verification_revision.get(task_id)
+            ):
+                raise EvolutionError(
+                    f"Queue history DONE revision for task {task_id!r} does not match its bound PASS revision"
+                )
         previous_destination = latest_status.get(task_id)
         if previous_destination is not None and event["from"] != previous_destination:
             raise EvolutionError(
@@ -464,8 +501,9 @@ def advance_task(
     Entering SELECTED grants a lease to `owner`; every later change of an
     active item needs that lease's unexpired `token`. Repeating the current
     status is a no-op, but on an active item it still needs a valid token.
-    DONE also needs `revision`, the digest of the code as it is now; a PASS
-    recorded for other code does not count.
+    DONE also needs `revision`, the digest of the exact source snapshot named
+    by a PASS verification under the current lease. Callers must not describe
+    this as proof that a mutable live source tree is unchanged at finalization.
     """
     if not isinstance(status, str) or status not in QUEUE_STATUSES:
         raise EvolutionError(f"Unsupported queue status: {status!r}")
@@ -506,6 +544,12 @@ def advance_task(
     updated = _apply_transition(queue, task_id, status, note)
     if status == "SELECTED":
         updated["history"][-1]["lease_sha256"] = _lease_fingerprint(lease["token"])
+    if status == "DONE":
+        # Persist the exact revision that satisfied the PASS gate on the DONE
+        # transition itself; a separate PASS event alone is not enough to make
+        # the terminal status self-describing.
+        updated["history"][-1]["revision"] = revision
+        updated["history"][-1]["revision_semantics"] = "tested_source_snapshot_sha256"
     target = next(entry for entry in updated["items"] if entry["id"] == task_id)
     if status in ACTIVE_STATUSES:
         target["lease"] = lease
@@ -645,8 +689,9 @@ def record_verification_file(
     number captured before verification started, and be recorded by the holder
     of its current, unexpired lease. It is refused unless that exact attempt is
     still IN_PROGRESS, so a late result cannot count for a retry.
-    ``revision`` is the digest of the code that was tested; DONE compares it
-    with the code as it is when the task completes.
+    ``revision`` is the digest of the source snapshot that was tested; DONE
+    requires a matching PASS digest under the current lease. This queue layer
+    does not itself prove that the live source tree remains unchanged.
     """
     if not isinstance(task_id, str) or not task_id.strip():
         raise EvolutionError("Verification task_id must be a non-empty string")
@@ -774,3 +819,70 @@ def recover_expired_leases_file(path: Path, *, now: datetime | None = None) -> d
         if result["recovered"]:
             _write_queue_atomically(path, result["queue"])
     return {"recovered": result["recovered"], "path": path.as_posix()}
+
+
+def migrate_queue(queue: Any) -> dict[str, Any]:
+    """Return the version 2 form of a valid version 1 queue; a version 2 queue is returned unchanged.
+
+    Version 1 validation already refused a DONE without a PASS bound to the
+    same source, attempt, lease and a digest revision. Migration copies that
+    PASS revision onto the DONE event and labels it as migrated, so no status
+    or evidence is upgraded. A queue that fails version 1 validation is refused.
+    """
+    if isinstance(queue, dict) and queue.get("version") == QUEUE_VERSION:
+        return _validate_queue(json.loads(canonical_json(queue)), QUEUE_VERSION)
+    legacy_done: dict[int, str] = {}
+    migrated = _validate_queue(json.loads(canonical_json(queue)), 1, legacy_done)
+    for index, revision in legacy_done.items():
+        migrated["history"][index]["revision"] = revision
+        migrated["history"][index]["revision_semantics"] = "migrated_v1_bound_pass_revision"
+    migrated["version"] = QUEUE_VERSION
+    return _validate_queue(migrated, QUEUE_VERSION)
+
+
+def migrate_queue_file(path: Path) -> dict[str, Any]:
+    """Migrate a queue file in place, keeping the version 1 bytes in `<name>.v1.bak`.
+
+    Idempotent and restartable: the backup is written before the queue is
+    replaced, so an interrupted run leaves either the untouched version 1 file
+    with its backup or the finished version 2 file. An existing backup that
+    differs from the version 1 file is refused rather than overwritten.
+    """
+    backup = path.with_name(f"{path.name}.v1.bak")
+    with queue_write_lock(path):
+        try:
+            raw = path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise EvolutionError(f"Cannot read task queue for migration: {exc}") from exc
+        if isinstance(parsed, dict) and parsed.get("version") == QUEUE_VERSION:
+            _validate_queue(parsed, QUEUE_VERSION)
+            return {"migrated": False, "path": path.as_posix(), "backup": None}
+        migrated = migrate_queue(parsed)
+        if backup.exists():
+            if backup.read_text(encoding="utf-8") != raw:
+                raise EvolutionError(f"Migration backup {backup.as_posix()} differs from the queue; refusing to overwrite it")
+        else:
+            _write_text_atomically(backup, raw)
+        _write_queue_atomically(path, migrated)
+    return {"migrated": True, "path": path.as_posix(), "backup": backup.as_posix()}
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Task queue maintenance.")
+    parser.add_argument("command", choices=["migrate"])
+    parser.add_argument("--queue", type=Path, default=Path("TASK_QUEUE.json"))
+    args = parser.parse_args(argv)
+    try:
+        result = migrate_queue_file(args.queue)
+    except EvolutionError as exc:
+        print(json.dumps({"migrated": False, "error": str(exc)}, indent=2))
+        return 3
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

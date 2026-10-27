@@ -13,9 +13,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autopoesis.executor import source_tree_digest
-from autopoesis.orchestrator import HANDLERS, LOCK_RETRIES, LOCK_RETRY_SECONDS, run_cycle
+from autopoesis.orchestrator import EXIT_CODES, HANDLERS, LOCK_RETRIES, LOCK_RETRY_SECONDS, run_cycle
 from autopoesis.task_queue import (
     LEASE_TTL,
+    MAX_ATTEMPTS,
     advance_task_file,
     load_queue,
     queue_write_lock,
@@ -129,7 +130,7 @@ class OrchestratorTests(unittest.TestCase):
         ticks = iter([0.0, 1000.0])
         result = run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": passing},
                            budget_seconds=10, clock=lambda: next(ticks))
-        self.assertEqual((result["status"], result["final"]), ("TIMED_OUT", "OPEN"))
+        self.assertEqual((result["status"], result["final"]), ("RETRYABLE_FAILURE", "OPEN"))
         self.assertEqual(self.item()["status"], "OPEN")
         self.assertFalse(self.events("VERIFICATION_RECORDED"))
 
@@ -143,7 +144,7 @@ class OrchestratorTests(unittest.TestCase):
         started = time.monotonic()
         result = run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": hung}, budget_seconds=1)
         self.assertLess(time.monotonic() - started, 10)
-        self.assertEqual((result["status"], result["final"]), ("TIMED_OUT", "OPEN"))
+        self.assertEqual((result["status"], result["final"]), ("RETRYABLE_FAILURE", "OPEN"))
         self.assertFalse(self.events("VERIFICATION_RECORDED"))
         self.assertEqual(run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": passing})["final"],
                          "DONE")
@@ -155,7 +156,7 @@ class OrchestratorTests(unittest.TestCase):
         with queue_write_lock(self.path):
             result = run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": passing})
         self.assertLess(time.monotonic() - started, LOCK_RETRIES * LOCK_RETRY_SECONDS + 5)
-        self.assertEqual(result["status"], "REFUSED")
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
         self.assertIn("locked by another writer", result["reason"])
         self.assertEqual(self.path.read_bytes(), before)
 
@@ -174,7 +175,7 @@ class OrchestratorTests(unittest.TestCase):
         started = time.monotonic()
         result = run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": slow_result}, budget_seconds=1)
         self.assertLess(time.monotonic() - started, 10)
-        self.assertEqual((result["status"], result["final"]), ("TIMED_OUT", "OPEN"))
+        self.assertEqual((result["status"], result["final"]), ("RETRYABLE_FAILURE", "OPEN"))
         self.assertFalse(self.events("VERIFICATION_RECORDED"))
 
     def test_large_result_and_silent_exit_are_classified_correctly(self):
@@ -215,7 +216,7 @@ class OrchestratorTests(unittest.TestCase):
             return passing(item, root)
 
         result = run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": overtaken})
-        self.assertEqual(result["status"], "REFUSED")
+        self.assertEqual(result["status"], "RECOVERY_REQUIRED")
         self.assertIn("STALE_LEASE", result["reason"])
         self.assertEqual(self.item()["status"], "IN_PROGRESS")
         self.assertEqual(self.item()["lease"]["owner"], "other")
@@ -254,6 +255,60 @@ class OrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout)["final"], "DONE")
+
+    def test_done_records_the_tested_revision(self):
+        update_queue_file(self.path, [task()])
+        run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": passing})
+        tested = self.events("VERIFICATION_RECORDED")[-1]["revision"]
+        done = [e for e in self.events("STATUS_CHANGED") if e["to"] == "DONE"]
+        self.assertEqual(len(done), 1)
+        self.assertEqual((done[0]["revision"], done[0]["revision_semantics"]), (tested, "tested_source_snapshot_sha256"))
+
+    def test_tree_changed_after_testing_is_not_done(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            shutil.copytree(ROOT / "autopoesis", repo / "autopoesis", ignore=shutil.ignore_patterns("__pycache__"))
+            update_queue_file(self.path, [task()])
+
+            def mutating(item, root):
+                result = passing(item, root)
+                (root / "autopoesis" / "late_change.py").write_text("X = 1\n", encoding="utf-8")
+                return result
+
+            result = run_cycle(self.path, "runner", repo, handlers={"verify_test_scaffold": mutating})
+        self.assertEqual((result["status"], result["final"]), ("RETRYABLE_FAILURE", "OPEN"))
+        self.assertIn("does not match the tested revision", result["reason"])
+        self.assertEqual(self.item()["status"], "OPEN")
+
+    def test_pass_without_a_revision_is_not_done(self):
+        update_queue_file(self.path, [task()])
+        result = run_cycle(self.path, "runner", ROOT,
+                           handlers={"verify_test_scaffold": lambda item, root: {"verification_status": "PASS"}})
+        self.assertEqual((result["status"], result["final"]), ("RETRYABLE_FAILURE", "OPEN"))
+
+    def test_lease_expired_on_the_last_attempt_is_rejected(self):
+        update_queue_file(self.path, [task()])
+        for _ in range(MAX_ATTEMPTS - 1):
+            run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": failing})
+        past = datetime.now(timezone.utc) - LEASE_TTL - timedelta(minutes=1)
+        token = select_next_task_file(self.path, "crashed-runner", now=past)["lease"]["token"]
+        advance_task_file(self.path, "TASK-1", "IN_PROGRESS", token=token, now=past)
+        result = run_cycle(self.path, "runner", ROOT, handlers={"verify_test_scaffold": passing})
+        self.assertEqual((result["recovered"], result["rejected_after_recovery"]), (["TASK-1"], ["TASK-1"]))
+        self.assertEqual(result["status"], "NO_WORK")
+        self.assertEqual((self.item()["status"], self.item()["attempts"]), ("REJECTED", MAX_ATTEMPTS))
+        self.assertIn("attempt limit reached", self.events("STATUS_CHANGED")[-1]["note"])
+
+    def test_exit_codes_cover_every_outcome(self):
+        self.assertEqual(EXIT_CODES, {"COMPLETED": 0, "NO_WORK": 0, "DISABLED": 0, "RETRYABLE_FAILURE": 2,
+                                      "REJECTED": 2, "RECOVERY_REQUIRED": 3})
+        self.path.write_text(json.dumps({"version": 1, "items": [], "history": []}), encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, "-m", "autopoesis.orchestrator", "--queue", str(self.path), "--owner", "ci",
+             "--root", str(self.repo)],
+            cwd=ROOT, capture_output=True, text=True, timeout=120, check=False,
+        )
+        self.assertEqual((completed.returncode, json.loads(completed.stdout)["status"]), (3, "RECOVERY_REQUIRED"))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,10 @@
 
 recover expired leases -> select one task the runner can execute -> IN_PROGRESS
 -> run its allowlisted handler -> record verification -> DONE, OPEN or REJECTED.
+
+Outcomes and exit codes: COMPLETED (DONE), NO_WORK and DISABLED exit 0;
+RETRYABLE_FAILURE (back to OPEN) and REJECTED exit 2; RECOVERY_REQUIRED exits 3
+and means the queue refused a step, so the persisted state needs inspection.
 """
 
 from __future__ import annotations
@@ -48,6 +52,8 @@ HANDLERS: dict[str, Handler] = {"verify_test_scaffold": verify_test_scaffold}
 DEFAULT_BUDGET_SECONDS = 600
 LOCK_RETRIES = 50
 LOCK_RETRY_SECONDS = 0.1
+EXIT_CODES = {"COMPLETED": 0, "NO_WORK": 0, "DISABLED": 0, "RETRYABLE_FAILURE": 2, "REJECTED": 2,
+              "RECOVERY_REQUIRED": 3}
 
 
 def _when_unlocked(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -136,6 +142,16 @@ def run_cycle(
     report: dict[str, Any] = {}
     try:
         report["recovered"] = _when_unlocked(recover_expired_leases_file, queue_path)["recovered"]
+        # Recovery returns a task to OPEN, but one that used its last attempt would only be
+        # deferred forever by selection; it ends REJECTED with the reason in its history.
+        report["rejected_after_recovery"] = []
+        if report["recovered"]:
+            items = {entry["id"]: entry for entry in load_queue(queue_path)["items"]}
+            for recovered_id in report["recovered"]:
+                if items[recovered_id]["status"] == "OPEN" and items[recovered_id].get("attempts", 0) >= MAX_ATTEMPTS:
+                    _when_unlocked(advance_task_file, queue_path, recovered_id, "REJECTED",
+                                   "lease expired on the last attempt; attempt limit reached")
+                    report["rejected_after_recovery"].append(recovered_id)
         selection = _when_unlocked(select_next_task_file, queue_path, owner, types=frozenset(handlers))
         if selection["selected"] is None:
             return {**report, "status": "NO_WORK", "reason": selection["reason"]}
@@ -156,7 +172,8 @@ def run_cycle(
             # Evidence that arrives after the budget is not trusted; release the task untouched by it.
             _when_unlocked(advance_task_file, queue_path, task_id, "OPEN",
                            f"time budget of {budget_seconds}s exceeded", token=token)
-            return {**report, "status": "TIMED_OUT", "final": "OPEN"}
+            return {**report, "status": "RETRYABLE_FAILURE", "final": "OPEN",
+                    "reason": f"time budget of {budget_seconds}s exceeded"}
         report["verification"] = outcome["verification_status"]
         report["detail"] = outcome.get("detail")
 
@@ -165,19 +182,24 @@ def run_cycle(
             outcome.get("verification_level", "UNSPECIFIED"), outcome.get("artifact_sha256"), item["source"],
             attempt, outcome.get("revision"), token,
         )
-        if outcome["verification_status"] == "PASS":
-            revision = source_tree_digest(repository_root / "autopoesis")
+        tested = outcome.get("revision")
+        failure = None
+        if outcome["verification_status"] != "PASS":
+            failure = f"verification failed: {outcome.get('detail')}"
+        elif source_tree_digest(repository_root / "autopoesis") != tested:
+            # DONE records the tested snapshot; a live tree that no longer matches it is not that code.
+            failure = "source tree does not match the tested revision"
+        if failure is None:
             _when_unlocked(advance_task_file, queue_path, task_id, "DONE", f"verified by {owner}",
-                           token=token, revision=revision)
-            final = "DONE"
-        else:
-            final = "REJECTED" if attempt >= MAX_ATTEMPTS else "OPEN"
-            _when_unlocked(advance_task_file, queue_path, task_id, final,
-                           f"verification failed: {outcome.get('detail')}", token=token)
+                           token=token, revision=tested)
+            return {**report, "status": "COMPLETED", "final": "DONE"}
+        final = "REJECTED" if attempt >= MAX_ATTEMPTS else "OPEN"
+        _when_unlocked(advance_task_file, queue_path, task_id, final, failure, token=token)
+        report["reason"] = failure
     except EvolutionError as exc:
         # The queue refused a step (for example a stale lease after recovery); nothing more is written.
-        return {**report, "status": "REFUSED", "reason": str(exc)}
-    return {**report, "status": "COMPLETED", "final": final}
+        return {**report, "status": "RECOVERY_REQUIRED", "reason": str(exc)}
+    return {**report, "status": "REJECTED" if final == "REJECTED" else "RETRYABLE_FAILURE", "final": final}
 
 
 def main() -> int:
@@ -191,7 +213,7 @@ def main() -> int:
     result = run_cycle(args.queue, args.owner, args.root.resolve(), disable_path=args.disable_file,
                        budget_seconds=args.budget_seconds)
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 1 if result["status"] == "REFUSED" else 0
+    return EXIT_CODES[result["status"]]
 
 
 if __name__ == "__main__":
