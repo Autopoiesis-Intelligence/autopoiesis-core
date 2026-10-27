@@ -46,7 +46,7 @@ class BoundedOutputCaptureTests(unittest.TestCase):
             bin_dir.mkdir()
             marker = root / "docker-kill-args.txt"
             fake_docker = bin_dir / "docker"
-            fake_docker.write_text(
+            fake_docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_KILL_MARKER\"\nexit 0\n",
                 encoding="utf-8",
             )
