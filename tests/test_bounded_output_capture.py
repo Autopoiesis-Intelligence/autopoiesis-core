@@ -22,6 +22,20 @@ class BoundedOutputCaptureTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(target.read_bytes(), b"safe-output")
 
+    def test_output_exactly_at_limit_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "output.bin"
+            payload = b"x" * 64
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(target), "--max-bytes", "64"],
+                input=payload,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(target.read_bytes(), payload)
+
     def test_output_flood_is_capped_and_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "output.bin"
