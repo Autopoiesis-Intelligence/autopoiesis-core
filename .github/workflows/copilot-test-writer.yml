@@ -249,12 +249,34 @@ jobs:
           module="$(python -c 'import sys; print(sys.argv[1][:-3].replace("/", "."))' "$TARGET")"
           docker pull --quiet "$TEST_IMAGE"
           set +e
-          timeout 120s docker run --rm --network none --read-only --tmpfs /tmp --user 65534:65534 \
+          timeout --signal=TERM --kill-after=5s 120s docker run --rm --network none --read-only --tmpfs /tmp --user 65534:65534 \
             --cap-drop ALL --security-opt no-new-privileges -e PYTHONDONTWRITEBYTECODE=1 \
             -v "$sandbox":/work:ro -w /work "$TEST_IMAGE" \
-            python -m unittest -v "$module" 2>&1 | tee "$RUNNER_TEMP/test-output.txt"
-          test_status=${PIPESTATUS[0]}
+            python -m unittest -v "$module" 2>&1 | python -c '
+          import sys
+          limit = 1024 * 1024
+          total = 0
+          with open(sys.argv[1], "wb") as output:
+              while True:
+                  chunk = sys.stdin.buffer.read(8192)
+                  if not chunk:
+                      break
+                  remaining = limit - total
+                  if remaining > 0:
+                      output.write(chunk[:remaining])
+                      total += min(len(chunk), remaining)
+                  if len(chunk) > remaining:
+                      print("ERROR: generated test output exceeded 1 MiB; terminating pipeline", file=sys.stderr)
+                      sys.exit(125)
+          print(f"Captured {total} output bytes (limit {limit})", file=sys.stderr)
+          ' "$RUNNER_TEMP/test-output.txt"
+          pipeline_status=(${PIPESTATUS[@]})
+          test_status=${pipeline_status[0]}
+          capture_status=${pipeline_status[1]}
           set -e
+          if [[ "$capture_status" -ne 0 ]]; then
+            test_status="$capture_status"
+          fi
           {
             echo "## Proposed test run (isolated container on a copy, not the repository)"
             echo "- Module: $module"
