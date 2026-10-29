@@ -80,6 +80,7 @@ jobs:
           python - <<'PY'
           import json
           import hashlib
+          import hashlib
           import os
           import subprocess
           from pathlib import Path
@@ -261,7 +262,8 @@ jobs:
           tree_sha = subprocess.check_output(
               ["git", "rev-parse", "HEAD^{tree}"], text=True
           ).strip()
-          lease_fingerprint = hashlib.sha256(f"ci-probe-{os.environ['GITHUB_RUN_ID']}".encode("utf-8")).hexdigest()
+          lease_token = f"ci-probe-{os.environ['GITHUB_RUN_ID']}"
+          lease_fingerprint = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
           update_queue_file(queue_path, [probe])
           record_outcome_file(
               queue_path,
