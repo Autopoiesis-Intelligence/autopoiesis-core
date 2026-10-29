@@ -118,7 +118,9 @@ class QueueDurabilityTests(unittest.TestCase):
     def test_writer_is_rejected_while_another_writer_holds_the_queue(self):
         from autopoesis.task_queue import queue_write_lock
 
-        original = self._seed()
+        self._seed()
+        self._prepare_bound_done()
+        original = self.path.read_bytes()
         with queue_write_lock(self.path):
             with self.assertRaisesRegex(EvolutionError, "locked by another writer"):
                 record_outcome_file(self.path, "TASK-1", "DONE", "concurrent")
