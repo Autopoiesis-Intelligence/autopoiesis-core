@@ -12,7 +12,7 @@ A task may transition to `DONE` only when all of these values match the currentl
 
 - `task_id`: exact queue item ID.
 - `attempt`: positive integer equal to the item's current attempt number.
-- `lease_id`: unique opaque token issued when that attempt enters `IN_PROGRESS`.
+- `lease_fingerprint`: lowercase SHA-256 fingerprint of the unique opaque token issued when that attempt enters `IN_PROGRESS`.
 - `commit_sha`: full lowercase 40-character Git commit SHA that was checked out for the attempt.
 - `tree_sha`: full lowercase 40-character Git tree SHA from that same commit.
 - `verification_status`: `PASS`.
