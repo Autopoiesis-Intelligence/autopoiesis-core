@@ -39,6 +39,16 @@ class QueueDurabilityTests(unittest.TestCase):
         update_queue_file(self.path, [{"id": "TASK-1", "type": "proposal"}])
         return self.path.read_bytes()
 
+    def _prepare_bound_done(self):
+        record_outcome_file(
+            self.path, "TASK-1", "IN_PROGRESS", "start",
+            lease_id="durability-lease", commit_sha="1" * 40, tree_sha="2" * 40,
+        )
+        record_verification_file(
+            self.path, "TASK-1", "PASS", "UNIT_TEST", "a" * 64,
+            attempt=1, lease_id="durability-lease", commit_sha="1" * 40, tree_sha="2" * 40,
+        )
+
     def test_malformed_json_fails_closed_and_is_not_overwritten(self):
         self.path.write_text('{"version": 1, "items": [', encoding="utf-8")
         original = self.path.read_bytes()
@@ -54,7 +64,9 @@ class QueueDurabilityTests(unittest.TestCase):
             load_queue(self.path)
 
     def test_failed_write_or_flush_preserves_previous_queue_bytes(self):
-        original = self._seed()
+        self._seed()
+        self._prepare_bound_done()
+        original = self.path.read_bytes()
         for target in ("autopoesis.task_queue.os.fsync", "autopoesis.task_queue.os.fdopen"):
             with self.subTest(target=target):
                 with patch(target, side_effect=OSError("disk full")):
@@ -64,7 +76,9 @@ class QueueDurabilityTests(unittest.TestCase):
                 self.assertEqual(list(self.path.parent.glob(f".{self.path.name}.*.tmp")), [])
 
     def test_failed_verification_write_preserves_previous_queue_bytes(self):
-        original = self._seed()
+        self._seed()
+        self._prepare_bound_done()
+        original = self.path.read_bytes()
         with patch("autopoesis.task_queue.os.replace", side_effect=OSError("disk error")):
             with self.assertRaisesRegex(OSError, "disk error"):
                 record_verification_file(self.path, "TASK-1", "PASS", "unit")
