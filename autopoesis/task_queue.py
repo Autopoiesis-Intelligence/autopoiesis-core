@@ -262,6 +262,7 @@ def _matching_pass(
         event for event in history
         if event.get("event") == "VERIFICATION_RECORDED"
         and event.get("task_id") == task_id
+        and type(event.get("attempt")) is int
         and event.get("attempt") == attempt
         and event.get("lease_fingerprint") == lease_fingerprint
         and event.get("commit_sha") == commit_sha
