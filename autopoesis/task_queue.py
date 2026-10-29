@@ -241,8 +241,47 @@ def merge_candidates(queue: dict[str, Any], candidates: list[dict[str, Any]]) ->
     return {"queue": merged, "added": added, "total": len(merged["items"])}
 
 
-def record_outcome(queue: dict[str, Any], task_id: str, status: str, note: str = "") -> dict[str, Any]:
-    """Record a bounded lifecycle transition without executing the task."""
+def _valid_git_sha(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _matching_pass(
+    history: list[dict[str, Any]],
+    *,
+    task_id: str,
+    attempt: int,
+    lease_fingerprint: str,
+    commit_sha: str,
+    tree_sha: str,
+) -> bool:
+    matching = [
+        event for event in history
+        if event.get("event") == "VERIFICATION_RECORDED"
+        and event.get("task_id") == task_id
+        and type(event.get("attempt")) is int
+        and event.get("attempt") == attempt
+        and event.get("lease_fingerprint") == lease_fingerprint
+        and event.get("commit_sha") == commit_sha
+        and event.get("tree_sha") == tree_sha
+    ]
+    return bool(matching) and matching[-1].get("verification_status") == "PASS"
+
+
+def record_outcome(
+    queue: dict[str, Any],
+    task_id: str,
+    status: str,
+    note: str = "",
+    *,
+    lease_fingerprint: str | None = None,
+    commit_sha: str | None = None,
+    tree_sha: str | None = None,
+) -> dict[str, Any]:
+    """Record a lifecycle transition; DONE requires PASS bound to the active attempt."""
     if not isinstance(task_id, str) or not task_id.strip():
         raise EvolutionError("Task id must be a non-empty string")
     if not isinstance(status, str) or status not in QUEUE_STATUSES:
@@ -260,18 +299,59 @@ def record_outcome(queue: dict[str, Any], task_id: str, status: str, note: str =
     attempts = item.get("attempts", 0)
     if type(attempts) is not int or attempts < 0:
         raise EvolutionError(f"Invalid attempts count for queued task {task_id!r}")
-    item["status"] = status
+
     if status == "IN_PROGRESS":
+        if not isinstance(lease_fingerprint, str) or len(lease_fingerprint) != 64 or any(char not in "0123456789abcdef" for char in lease_fingerprint):
+            raise EvolutionError("IN_PROGRESS requires a lowercase SHA-256 lease_fingerprint")
+        if not _valid_git_sha(commit_sha) or not _valid_git_sha(tree_sha):
+            raise EvolutionError("IN_PROGRESS requires full lowercase commit_sha and tree_sha")
         item["attempts"] = attempts + 1
+        item["lease_fingerprint"] = lease_fingerprint
+        item["commit_sha"] = commit_sha
+        item["tree_sha"] = tree_sha
+        item["status"] = status
+    elif status == "DONE":
+        active_attempt = attempts
+        active_lease = item.get("lease_fingerprint")
+        active_commit = item.get("commit_sha")
+        active_tree = item.get("tree_sha")
+        if previous != "IN_PROGRESS":
+            raise EvolutionError("DONE requires an active IN_PROGRESS attempt")
+        if (
+            not isinstance(active_lease, str) or len(active_lease) != 64 or any(char not in "0123456789abcdef" for char in active_lease)
+            or not _valid_git_sha(active_commit)
+            or not _valid_git_sha(active_tree)
+            or not _matching_pass(
+                updated.get("history", []),
+                task_id=task_id,
+                attempt=active_attempt,
+                lease_fingerprint=active_lease,
+                commit_sha=active_commit,
+                tree_sha=active_tree,
+            )
+        ):
+            raise EvolutionError("DONE requires matching PASS verification evidence for the active attempt")
+        item["status"] = status
+    else:
+        item["status"] = status
+
     timestamp = datetime.now(timezone.utc).isoformat()
-    updated.setdefault("history", []).append({
+    event = {
         "event": "STATUS_CHANGED",
         "task_id": task_id,
         "from": previous,
         "to": status,
         "note": note,
         "at": timestamp,
-    })
+    }
+    if status in {"IN_PROGRESS", "DONE"}:
+        event.update({
+            "attempt": item.get("attempts", attempts),
+            "lease_fingerprint": item.get("lease_fingerprint"),
+            "commit_sha": item.get("commit_sha"),
+            "tree_sha": item.get("tree_sha"),
+        })
+    updated.setdefault("history", []).append(event)
     return updated
 
 
@@ -281,8 +361,13 @@ def record_verification_file(
     verification_status: str,
     verification_level: str,
     artifact_sha256: str | None = None,
+    *,
+    attempt: int | None = None,
+    lease_fingerprint: str | None = None,
+    commit_sha: str | None = None,
+    tree_sha: str | None = None,
 ) -> dict[str, Any]:
-    """Persist a verification result as evidence without changing task lifecycle status."""
+    """Persist verification evidence, optionally bound to one exact task attempt."""
     if not isinstance(task_id, str) or not task_id.strip():
         raise EvolutionError("Verification task_id must be a non-empty string")
     if not isinstance(verification_status, str) or verification_status not in {"PASS", "FAIL"}:
@@ -295,6 +380,14 @@ def record_verification_file(
         or any(char not in "0123456789abcdef" for char in artifact_sha256)
     ):
         raise EvolutionError("artifact_sha256 must be a lowercase SHA-256 hex digest")
+    bindings = (attempt, lease_fingerprint, commit_sha, tree_sha)
+    if any(value is not None for value in bindings):
+        if type(attempt) is not int or attempt < 1:
+            raise EvolutionError("Bound verification requires a positive integer attempt")
+        if not isinstance(lease_fingerprint, str) or len(lease_fingerprint) != 64 or any(char not in "0123456789abcdef" for char in lease_fingerprint):
+            raise EvolutionError("Bound verification requires a lowercase SHA-256 lease_fingerprint")
+        if not _valid_git_sha(commit_sha) or not _valid_git_sha(tree_sha):
+            raise EvolutionError("Bound verification requires full lowercase commit_sha and tree_sha")
 
     with queue_write_lock(path):
         queue = load_queue(path)
@@ -306,6 +399,13 @@ def record_verification_file(
             "artifact_sha256": artifact_sha256,
             "at": datetime.now(timezone.utc).isoformat(),
         }
+        if all(value is not None for value in bindings):
+            event.update({
+                "attempt": attempt,
+                "lease_fingerprint": lease_fingerprint,
+                "commit_sha": commit_sha,
+                "tree_sha": tree_sha,
+            })
         updated = json.loads(canonical_json(queue))
         updated["history"].append(event)
         _write_queue_atomically(path, updated)
@@ -321,10 +421,22 @@ def update_queue_file(path: Path, candidates: list[dict[str, Any]]) -> dict[str,
     return {"added": result["added"], "total": result["total"], "path": path.as_posix()}
 
 
-def record_outcome_file(path: Path, task_id: str, status: str, note: str = "") -> dict[str, Any]:
-    """Persist a status transition and its audit event to the queue file."""
+def record_outcome_file(
+    path: Path,
+    task_id: str,
+    status: str,
+    note: str = "",
+    *,
+    lease_fingerprint: str | None = None,
+    commit_sha: str | None = None,
+    tree_sha: str | None = None,
+) -> dict[str, Any]:
+    """Persist a lifecycle transition and its audit event to the queue file."""
     with queue_write_lock(path):
         queue = load_queue(path)
-        updated = record_outcome(queue, task_id, status, note)
+        updated = record_outcome(
+            queue, task_id, status, note,
+            lease_fingerprint=lease_fingerprint, commit_sha=commit_sha, tree_sha=tree_sha,
+        )
         _write_queue_atomically(path, updated)
     return {"task_id": task_id, "status": status, "path": path.as_posix()}

@@ -116,7 +116,7 @@ class EvolutionCoreTests(unittest.TestCase):
             }
 
             update_queue_file(original_path, [candidate])
-            record_outcome_file(original_path, candidate["id"], "IN_PROGRESS", "first run")
+            record_outcome_file(original_path, candidate["id"], "IN_PROGRESS", "first run", lease_fingerprint="c" * 64, commit_sha="1" * 40, tree_sha="2" * 40)
             original = load_queue(original_path)
             original_bytes = original_path.read_bytes()
 

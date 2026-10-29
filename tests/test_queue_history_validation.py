@@ -229,6 +229,14 @@ class QueueHistoryValidationTests(unittest.TestCase):
                 "type": "proposal",
                 "description": "test",
             }])
+            record_outcome_file(
+                path, "TASK-1", "IN_PROGRESS", "start",
+                lease_fingerprint="c" * 64, commit_sha="1" * 40, tree_sha="2" * 40,
+            )
+            record_verification_file(
+                path, "TASK-1", "PASS", "UNIT_TEST", "a" * 64,
+                attempt=1, lease_fingerprint="c" * 64, commit_sha="1" * 40, tree_sha="2" * 40,
+            )
             record_outcome_file(path, "TASK-1", "DONE", "test transition")
             queue = load_queue(path)
             self.assertEqual([event["event"] for event in queue["history"]], [

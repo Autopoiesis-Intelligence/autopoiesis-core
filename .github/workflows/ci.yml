@@ -79,6 +79,8 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RESTORE_RUN_ID}" > .restore-run.json
           python - <<'PY'
           import json
+          import hashlib
+          import hashlib
           import os
           import subprocess
           from pathlib import Path
@@ -237,6 +239,8 @@ jobs:
         if: ${{ inputs.seed_done_probe }}
         run: |
           python - <<'PY'
+          import os
+          import subprocess
           from pathlib import Path
           from autopoesis.task_queue import (
               update_queue_file,
@@ -252,7 +256,35 @@ jobs:
               "evidence": "explicit workflow_dispatch seed for cross-run snapshot verification",
               "description": "Synthetic verification item; not a production task.",
           }
+          commit_sha = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          tree_sha = subprocess.check_output(
+              ["git", "rev-parse", "HEAD^{tree}"], text=True
+          ).strip()
+          lease_token = f"ci-probe-{os.environ['GITHUB_RUN_ID']}"
+          lease_fingerprint = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
           update_queue_file(queue_path, [probe])
+          record_outcome_file(
+              queue_path,
+              probe["id"],
+              "IN_PROGRESS",
+              "start synthetic persistence probe",
+              lease_fingerprint=lease_fingerprint,
+              commit_sha=commit_sha,
+              tree_sha=tree_sha,
+          )
+          record_verification_file(
+              queue_path,
+              probe["id"],
+              "PASS",
+              "CI_SYNTHETIC_PERSISTENCE_PROBE",
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              attempt=1,
+              lease_fingerprint=lease_fingerprint,
+              commit_sha=commit_sha,
+              tree_sha=tree_sha,
+          )
           record_outcome_file(
               queue_path,
               probe["id"],
