@@ -17,12 +17,12 @@ from autopoesis.task_queue import (
 class DoneEvidenceContractTests(unittest.TestCase):
     COMMIT = "1" * 40
     TREE = "2" * 40
-    LEASE = "lease-g3-attempt-1"
+    LEASE = "c" * 64
 
     def _start_attempt(self, path: Path) -> None:
         record_outcome_file(
             path, "G3-TASK-1", "IN_PROGRESS", "start test attempt",
-            lease_id=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
+            lease_fingerprint=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
         )
 
     def _queue_path(self, directory: str) -> Path:
@@ -41,7 +41,7 @@ class DoneEvidenceContractTests(unittest.TestCase):
             queue = load_queue(self._queue_path(directory))
             queue = record_outcome(
                 queue, "G3-TASK-1", "IN_PROGRESS", "start test attempt",
-                lease_id=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
+                lease_fingerprint=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
             )
             with self.assertRaisesRegex(EvolutionError, "verification|evidence|DONE"):
                 record_outcome(queue, "G3-TASK-1", "DONE", "no verification evidence")
@@ -59,7 +59,7 @@ class DoneEvidenceContractTests(unittest.TestCase):
             self._start_attempt(path)
             record_verification_file(
                 path, "UNRELATED-TASK", "PASS", "GENERATED_TEST_EXECUTION", "a" * 64,
-                attempt=1, lease_id=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
+                attempt=1, lease_fingerprint=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
             )
             with self.assertRaisesRegex(EvolutionError, "verification|evidence|DONE"):
                 record_outcome_file(path, "G3-TASK-1", "DONE", "unrelated PASS must not authorize")
@@ -70,7 +70,7 @@ class DoneEvidenceContractTests(unittest.TestCase):
             self._start_attempt(path)
             record_verification_file(
                 path, "G3-TASK-1", "PASS", "GENERATED_TEST_EXECUTION", "a" * 64,
-                attempt=1, lease_id=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
+                attempt=1, lease_fingerprint=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
             )
             result = record_outcome_file(path, "G3-TASK-1", "DONE", "verified")
             self.assertEqual(result["status"], "DONE")
@@ -79,10 +79,10 @@ class DoneEvidenceContractTests(unittest.TestCase):
 
     def test_mismatched_attempt_lease_commit_or_tree_does_not_authorize_done(self):
         mismatches = [
-            {"attempt": 2, "lease_id": LEASE, "commit_sha": COMMIT, "tree_sha": TREE},
-            {"attempt": 1, "lease_id": "other-lease", "commit_sha": COMMIT, "tree_sha": TREE},
-            {"attempt": 1, "lease_id": LEASE, "commit_sha": "3" * 40, "tree_sha": TREE},
-            {"attempt": 1, "lease_id": LEASE, "commit_sha": COMMIT, "tree_sha": "4" * 40},
+            {"attempt": 2, "lease_fingerprint": LEASE, "commit_sha": COMMIT, "tree_sha": TREE},
+            {"attempt": 1, "lease_fingerprint": "d" * 64, "commit_sha": COMMIT, "tree_sha": TREE},
+            {"attempt": 1, "lease_fingerprint": LEASE, "commit_sha": "3" * 40, "tree_sha": TREE},
+            {"attempt": 1, "lease_fingerprint": LEASE, "commit_sha": COMMIT, "tree_sha": "4" * 40},
         ]
         for binding in mismatches:
             with self.subTest(binding=binding), tempfile.TemporaryDirectory() as directory:
@@ -100,7 +100,7 @@ class DoneEvidenceContractTests(unittest.TestCase):
             path = self._queue_path(directory)
             self._start_attempt(path)
             binding = {
-                "attempt": 1, "lease_id": self.LEASE,
+                "attempt": 1, "lease_fingerprint": self.LEASE,
                 "commit_sha": self.COMMIT, "tree_sha": self.TREE,
             }
             record_verification_file(
