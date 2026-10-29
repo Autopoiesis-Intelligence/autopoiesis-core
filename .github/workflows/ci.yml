@@ -79,6 +79,7 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RESTORE_RUN_ID}" > .restore-run.json
           python - <<'PY'
           import json
+          import hashlib
           import os
           import subprocess
           from pathlib import Path
@@ -260,14 +261,14 @@ jobs:
           tree_sha = subprocess.check_output(
               ["git", "rev-parse", "HEAD^{tree}"], text=True
           ).strip()
-          lease_id = f"ci-probe-{os.environ['GITHUB_RUN_ID']}"
+          lease_fingerprint = hashlib.sha256(f"ci-probe-{os.environ['GITHUB_RUN_ID']}".encode("utf-8")).hexdigest()
           update_queue_file(queue_path, [probe])
           record_outcome_file(
               queue_path,
               probe["id"],
               "IN_PROGRESS",
               "start synthetic persistence probe",
-              lease_id=lease_id,
+              lease_fingerprint=lease_fingerprint,
               commit_sha=commit_sha,
               tree_sha=tree_sha,
           )
@@ -278,7 +279,7 @@ jobs:
               "CI_SYNTHETIC_PERSISTENCE_PROBE",
               "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               attempt=1,
-              lease_id=lease_id,
+              lease_fingerprint=lease_fingerprint,
               commit_sha=commit_sha,
               tree_sha=tree_sha,
           )
