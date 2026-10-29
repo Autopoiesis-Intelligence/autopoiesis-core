@@ -1,6 +1,5 @@
 """G3 regression tests: DONE must require matching verification evidence."""
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
