@@ -142,7 +142,7 @@ def execute_task(task: dict[str, Any], queue_path: Path) -> dict[str, Any]:
             target_id,
             status,
             note,
-            lease_id=task.get("lease_id"),
+            lease_fingerprint=task.get("lease_fingerprint"),
             commit_sha=task.get("commit_sha"),
             tree_sha=task.get("tree_sha"),
         )
