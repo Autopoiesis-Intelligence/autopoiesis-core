@@ -42,11 +42,11 @@ class QueueDurabilityTests(unittest.TestCase):
     def _prepare_bound_done(self):
         record_outcome_file(
             self.path, "TASK-1", "IN_PROGRESS", "start",
-            lease_id="durability-lease", commit_sha="1" * 40, tree_sha="2" * 40,
+            lease_fingerprint="c" * 64, commit_sha="1" * 40, tree_sha="2" * 40,
         )
         record_verification_file(
             self.path, "TASK-1", "PASS", "UNIT_TEST", "a" * 64,
-            attempt=1, lease_id="durability-lease", commit_sha="1" * 40, tree_sha="2" * 40,
+            attempt=1, lease_fingerprint="c" * 64, commit_sha="1" * 40, tree_sha="2" * 40,
         )
 
     def test_malformed_json_fails_closed_and_is_not_overwritten(self):
