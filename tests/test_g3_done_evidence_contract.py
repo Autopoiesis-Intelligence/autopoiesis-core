@@ -1,5 +1,6 @@
 """G3 regression tests: DONE must require matching verification evidence."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -113,6 +114,29 @@ class DoneEvidenceContractTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(EvolutionError, "verification|evidence|DONE"):
                 record_outcome_file(path, "G3-TASK-1", "DONE", "later FAIL supersedes PASS")
+
+
+    def test_boolean_attempt_in_persisted_style_event_does_not_authorize_done(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = load_queue(self._queue_path(directory))
+            queue = record_outcome(
+                queue, "G3-TASK-1", "IN_PROGRESS", "start",
+                lease_fingerprint=self.LEASE, commit_sha=self.COMMIT, tree_sha=self.TREE,
+            )
+            queue["history"].append({
+                "event": "VERIFICATION_RECORDED",
+                "task_id": "G3-TASK-1",
+                "verification_status": "PASS",
+                "verification_level": "GENERATED_TEST_EXECUTION",
+                "artifact_sha256": "a" * 64,
+                "attempt": True,
+                "lease_fingerprint": self.LEASE,
+                "commit_sha": self.COMMIT,
+                "tree_sha": self.TREE,
+                "at": "2026-10-29T00:00:00+00:00",
+            })
+            with self.assertRaisesRegex(EvolutionError, "verification|evidence|DONE"):
+                record_outcome(queue, "G3-TASK-1", "DONE", "boolean attempt must be rejected")
 
     def test_unbound_pass_for_same_task_does_not_authorize_done(self):
         with tempfile.TemporaryDirectory() as directory:
