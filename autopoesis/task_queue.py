@@ -420,10 +420,22 @@ def update_queue_file(path: Path, candidates: list[dict[str, Any]]) -> dict[str,
     return {"added": result["added"], "total": result["total"], "path": path.as_posix()}
 
 
-def record_outcome_file(path: Path, task_id: str, status: str, note: str = "") -> dict[str, Any]:
-    """Persist a status transition and its audit event to the queue file."""
+def record_outcome_file(
+    path: Path,
+    task_id: str,
+    status: str,
+    note: str = "",
+    *,
+    lease_id: str | None = None,
+    commit_sha: str | None = None,
+    tree_sha: str | None = None,
+) -> dict[str, Any]:
+    """Persist a lifecycle transition and its audit event to the queue file."""
     with queue_write_lock(path):
         queue = load_queue(path)
-        updated = record_outcome(queue, task_id, status, note)
+        updated = record_outcome(
+            queue, task_id, status, note,
+            lease_id=lease_id, commit_sha=commit_sha, tree_sha=tree_sha,
+        )
         _write_queue_atomically(path, updated)
     return {"task_id": task_id, "status": status, "path": path.as_posix()}
