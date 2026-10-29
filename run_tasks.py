@@ -137,7 +137,15 @@ def execute_task(task: dict[str, Any], queue_path: Path) -> dict[str, Any]:
         note = task.get("note", "")
         if not isinstance(target_id, str) or not isinstance(status, str) or not isinstance(note, str):
             raise ValueError("update_task_status requires string task_id, status, and optional note")
-        result = record_outcome_file(queue_path, target_id, status, note)
+        result = record_outcome_file(
+            queue_path,
+            target_id,
+            status,
+            note,
+            lease_id=task.get("lease_id"),
+            commit_sha=task.get("commit_sha"),
+            tree_sha=task.get("tree_sha"),
+        )
     elif task_type == "prepare_test_patch":
         result = prepare_patch_artifact(task, ROOT)
     elif task_type == "verify_test_patch_sandbox":
