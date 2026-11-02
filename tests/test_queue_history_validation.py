@@ -242,6 +242,8 @@ class QueueHistoryValidationTests(unittest.TestCase):
             self.assertEqual([event["event"] for event in queue["history"]], [
                 "CANDIDATE_ADDED",
                 "STATUS_CHANGED",
+                "VERIFICATION_RECORDED",
+                "STATUS_CHANGED",
             ])
 
     def test_failed_atomic_replace_preserves_previous_queue_file(self):
@@ -252,7 +254,7 @@ class QueueHistoryValidationTests(unittest.TestCase):
 
             with patch("autopoesis.task_queue.os.replace", side_effect=OSError("disk error")):
                 with self.assertRaisesRegex(OSError, "disk error"):
-                    record_outcome_file(path, "TASK-1", "DONE", "must not partially persist")
+                    record_outcome_file(path, "TASK-1", "SELECTED", "must not partially persist")
 
             self.assertEqual(path.read_bytes(), original_bytes)
             self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
