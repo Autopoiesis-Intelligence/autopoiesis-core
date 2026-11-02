@@ -79,10 +79,10 @@ class DoneEvidenceContractTests(unittest.TestCase):
 
     def test_mismatched_attempt_lease_commit_or_tree_does_not_authorize_done(self):
         mismatches = [
-            {"attempt": 2, "lease_fingerprint": LEASE, "commit_sha": COMMIT, "tree_sha": TREE},
-            {"attempt": 1, "lease_fingerprint": "d" * 64, "commit_sha": COMMIT, "tree_sha": TREE},
-            {"attempt": 1, "lease_fingerprint": LEASE, "commit_sha": "3" * 40, "tree_sha": TREE},
-            {"attempt": 1, "lease_fingerprint": LEASE, "commit_sha": COMMIT, "tree_sha": "4" * 40},
+            {"attempt": 2, "lease_fingerprint": self.LEASE, "commit_sha": self.COMMIT, "tree_sha": self.TREE},
+            {"attempt": 1, "lease_fingerprint": "d" * 64, "commit_sha": self.COMMIT, "tree_sha": self.TREE},
+            {"attempt": 1, "lease_fingerprint": self.LEASE, "commit_sha": "3" * 40, "tree_sha": self.TREE},
+            {"attempt": 1, "lease_fingerprint": self.LEASE, "commit_sha": self.COMMIT, "tree_sha": "4" * 40},
         ]
         for binding in mismatches:
             with self.subTest(binding=binding), tempfile.TemporaryDirectory() as directory:
