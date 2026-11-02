@@ -122,13 +122,13 @@ class QueueSnapshotValidationTests(unittest.TestCase):
                 "id": "set-status",
                 "type": "update_task_status",
                 "task_id": candidate["id"],
-                "status": "DONE",
+                "status": "REJECTED",
                 "note": "first invocation",
             }]}), encoding="utf-8")
             self.assertEqual(run(tasks_path, results_path, queue_path), 0)
             after_first_run = load_queue(queue_path)
             prior_history = list(after_first_run["history"])
-            self.assertEqual(after_first_run["items"][0]["status"], "DONE")
+            self.assertEqual(after_first_run["items"][0]["status"], "REJECTED")
 
             tasks_path.write_text(json.dumps({"tasks": [{
                 "id": "merge-discovery",
@@ -141,7 +141,7 @@ class QueueSnapshotValidationTests(unittest.TestCase):
                 item for item in after_second_run["items"]
                 if item["id"] == candidate["id"]
             )
-            self.assertEqual(persisted_item["status"], "DONE")
+            self.assertEqual(persisted_item["status"], "REJECTED")
             self.assertEqual(
                 [event for event in after_second_run["history"] if event in prior_history],
                 prior_history,
