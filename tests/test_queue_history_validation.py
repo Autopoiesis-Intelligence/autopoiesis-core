@@ -252,6 +252,8 @@ class QueueHistoryValidationTests(unittest.TestCase):
             update_queue_file(path, [{"id": "TASK-1", "type": "proposal"}])
             original_bytes = path.read_bytes()
 
+            # Use a permitted transition so this test reaches the atomic-write failure path;
+            # DONE is intentionally rejected unless the active attempt has matching PASS evidence.
             with patch("autopoesis.task_queue.os.replace", side_effect=OSError("disk error")):
                 with self.assertRaisesRegex(OSError, "disk error"):
                     record_outcome_file(path, "TASK-1", "SELECTED", "must not partially persist")
