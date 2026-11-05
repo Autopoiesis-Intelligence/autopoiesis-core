@@ -239,6 +239,7 @@ jobs:
         if: ${{ inputs.seed_done_probe }}
         run: |
           python - <<'PY'
+          import hashlib
           import os
           import subprocess
           from pathlib import Path
