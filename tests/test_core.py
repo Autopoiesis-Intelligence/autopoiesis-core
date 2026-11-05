@@ -116,7 +116,7 @@ class EvolutionCoreTests(unittest.TestCase):
             }
 
             update_queue_file(original_path, [candidate])
-            record_outcome_file(original_path, candidate["id"], "IN_PROGRESS", "first run")
+            record_outcome_file(original_path, candidate["id"], "IN_PROGRESS", "first run", lease_fingerprint="c" * 64, commit_sha="1" * 40, tree_sha="2" * 40)
             original = load_queue(original_path)
             original_bytes = original_path.read_bytes()
 
@@ -160,7 +160,10 @@ class EvolutionCoreTests(unittest.TestCase):
                 "description": "Add focused tests.",
             }
             update_queue_file(path, [candidate])
-            outcome = record_outcome_file(path, "DISC-456", "IN_PROGRESS", "begin bounded work")
+            outcome = record_outcome_file(
+                path, "DISC-456", "IN_PROGRESS", "begin bounded work",
+                lease_fingerprint="c" * 64, commit_sha="1" * 40, tree_sha="2" * 40,
+            )
             self.assertEqual(outcome["status"], "IN_PROGRESS")
             queue = load_queue(path)
             self.assertEqual(queue["items"][0]["attempts"], 1)
