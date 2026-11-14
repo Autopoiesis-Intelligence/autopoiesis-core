@@ -186,5 +186,35 @@ class DoneEvidenceContractTests(unittest.TestCase):
                 load_queue(path)
 
 
+    def test_record_verification_rejects_malformed_attempt_bindings(self):
+        invalid_bindings = [
+            {"attempt": 1},
+            {
+                "attempt": True, "lease_fingerprint": self.LEASE,
+                "commit_sha": self.COMMIT, "tree_sha": self.TREE,
+            },
+            {
+                "attempt": 1, "lease_fingerprint": "C" * 64,
+                "commit_sha": self.COMMIT, "tree_sha": self.TREE,
+            },
+            {
+                "attempt": 1, "lease_fingerprint": self.LEASE,
+                "commit_sha": "not-a-git-sha", "tree_sha": self.TREE,
+            },
+            {
+                "attempt": 1, "lease_fingerprint": self.LEASE,
+                "commit_sha": self.COMMIT, "tree_sha": "F" * 40,
+            },
+        ]
+        for binding in invalid_bindings:
+            with self.subTest(binding=binding), tempfile.TemporaryDirectory() as directory:
+                path = self._queue_path(directory)
+                with self.assertRaises(EvolutionError):
+                    record_verification_file(
+                        path, "G3-TASK-1", "PASS", "GENERATED_TEST_EXECUTION",
+                        "a" * 64, **binding,
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()
