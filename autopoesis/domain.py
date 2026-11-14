@@ -40,13 +40,23 @@ def _non_empty_string(value: Any, field: str) -> str:
     return value
 
 
+def _validate_object_keys(value: Any, field: str) -> None:
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise StateModelError(f"{field} keys must be strings.")
+        for nested in value.values():
+            _validate_object_keys(nested, field)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _validate_object_keys(nested, field)
+
+
 def _attributes(value: Any, field: str) -> dict[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
         raise StateModelError(f"{field} must be a JSON object.")
-    if any(not isinstance(key, str) for key in value):
-        raise StateModelError(f"{field} keys must be strings.")
+    _validate_object_keys(value, field)
     result = dict(value)
     # Validate and detach nested values through a JSON round-trip.
     try:
