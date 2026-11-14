@@ -18,6 +18,7 @@
 | ADR-012 | Memory and accepted knowledge must retain epistemic status and source provenance | PROPOSED | Prevents hypotheses or rejected claims from silently becoming facts |
 | ADR-013 | A candidate transition declares parent state, affected relations, expected effects, risk, bounds and acceptance criteria | PROPOSED | Enables reproducible comparison and independent verification |
 | ADR-014 | Self-modification is a late capability gated by bounded generation, execution, verification, governance and rollback | ACCEPTED | Avoids treating code generation as proof of self-improvement |
+| ADR-015 | Represent the initial domain state as a canonical immutable graph snapshot with unique element/relation IDs and validated endpoints | PROPOSED | A minimal concrete representation for Ψ=(X,R); snapshot granularity and temporal semantics remain open |
 
 ## Unresolved questions
 
