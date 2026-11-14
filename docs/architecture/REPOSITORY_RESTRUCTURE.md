@@ -17,7 +17,8 @@ The repository currently contains one Python package, a file-driven runner, test
 
 | Current path | Primary responsibility today | Target boundary | Action |
 |---|---|---|---|
-| autopoesis/core.py | Canonical JSON, state digest, simple transition | kernel + domain contracts | Preserve and extract only after contract tests |
+| autopoesis/core.py | Canonical JSON, state digest, simple transition | kernel contracts | Preserve the public API; split pure primitives only after contract tests |
+| autopoesis/domain.py (new on restructuring branch) | Canonical state graph X and relation set R | domain model | Initial immutable snapshot contract; keep cohesive until complexity justifies a package |
 | autopoesis/task_queue.py | Queue schema, lifecycle, history, persistence | runtime/queue or persistence adapter | Separate lifecycle rules from file I/O |
 | autopoesis/queue_snapshot.py | Snapshot, restore and artifact provenance checks | adapters/storage + provenance contracts | Keep infrastructure-specific GitHub details outside kernel |
 | autopoesis/executor.py | Patch artifact generation, sandbox application and test execution | adapters/execution + verification | Split generation, application and verification interfaces |
@@ -165,5 +166,5 @@ This is a target map, not a requirement to split every file into a separate modu
 
 - R0: in progress; main and PR #69 reconciled at the SHAs above.
 - R1: target proposal drafted in this branch.
-- R2–R8: not started.
+- R2: initial StateGraph and contract tests implemented on the restructuring branch; awaiting executable test/CI evidence and independent audit.\n- R3–R8: not started.
 - Runtime autonomy: not proven by this documentation change.
