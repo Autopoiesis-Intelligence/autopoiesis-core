@@ -17,6 +17,7 @@ The trusted core is intended to remain deterministic and small. Network access, 
 
 - Deterministic JSON state digest using SHA-256 for content identity.
 - A small state transition operation that accepts a meaningful change and rejects a no-op.
+- An initial domain-neutral `StateGraph` snapshot for elements and relations, with canonical ordering, stable SHA-256 identity, endpoint validation and detached accessors. This is an early domain contract on the restructuring branch, not yet an evolution engine or a persistence model.
 - Explicit bounded task types rather than arbitrary shell or Python execution from task data.
 - Machine-readable task results.
 - Static discovery of TODO/FIXME/HACK markers and source modules without conventional tests.
