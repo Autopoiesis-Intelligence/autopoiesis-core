@@ -416,7 +416,8 @@ def record_verification_file(
             "verification_status": verification_status,
             "verification_level": verification_level,
             "artifact_sha256": artifact_sha256,
-            "at": datetime.now(timezone.utc).isoformat(),        }
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
         if all(value is not None for value in bindings):
             event.update({
                 "attempt": attempt,
