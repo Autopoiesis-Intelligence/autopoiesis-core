@@ -166,5 +166,7 @@ This is a target map, not a requirement to split every file into a separate modu
 
 - R0: in progress; main and PR #69 reconciled at the SHAs above.
 - R1: target proposal drafted in this branch.
-- R2: initial StateGraph and contract tests implemented on the restructuring branch; awaiting executable test/CI evidence and independent audit.\n- R3–R8: not started.
+- R2: initial `StateGraph` implementation and 22 contract tests are present on the restructuring branch. The tests have not been executed locally or in CI; implementation is not CI-proven and is not ready for owner review.
+- Validation blocker: the branch has no workflow run. The repository currently has 29 open PRs; do not create another PR until the existing queue and per-agent limit in `AGENTS.md` are reconciled.
+- R3–R8: not started.
 - Runtime autonomy: not proven by this documentation change.
