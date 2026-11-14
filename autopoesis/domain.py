@@ -45,6 +45,8 @@ def _attributes(value: Any, field: str) -> dict[str, Any]:
         return {}
     if not isinstance(value, Mapping):
         raise StateModelError(f"{field} must be a JSON object.")
+    if any(not isinstance(key, str) for key in value):
+        raise StateModelError(f"{field} keys must be strings.")
     result = dict(value)
     # Validate and detach nested values through a JSON round-trip.
     try:
@@ -135,7 +137,10 @@ class StateGraph:
             "elements": sorted(normalized_elements, key=lambda item: item["id"]),
             "relations": sorted(normalized_relations, key=lambda item: item["id"]),
         }
-        self._canonical = _canonical_json(document)
+        object.__setattr__(self, "_canonical", _canonical_json(document))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("StateGraph instances are immutable.")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> StateGraph:
