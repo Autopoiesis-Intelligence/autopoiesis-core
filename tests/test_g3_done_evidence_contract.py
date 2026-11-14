@@ -148,5 +148,43 @@ class DoneEvidenceContractTests(unittest.TestCase):
                 record_outcome_file(path, "G3-TASK-1", "DONE", "PASS lacks attempt/lease/commit/tree binding")
 
 
+    def test_load_queue_rejects_partial_attempt_binding_in_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._queue_path(directory)
+            queue = load_queue(path)
+            queue["history"].append({
+                "event": "VERIFICATION_RECORDED",
+                "task_id": "G3-TASK-1",
+                "verification_status": "PASS",
+                "verification_level": "GENERATED_TEST_EXECUTION",
+                "artifact_sha256": "a" * 64,
+                "attempt": 1,
+                "at": "2026-10-29T00:00:00+00:00",
+            })
+            path.write_text(__import__("json").dumps(queue), encoding="utf-8")
+            with self.assertRaisesRegex(EvolutionError, "lease_fingerprint"):
+                load_queue(path)
+
+    def test_load_queue_rejects_boolean_attempt_in_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._queue_path(directory)
+            queue = load_queue(path)
+            queue["history"].append({
+                "event": "VERIFICATION_RECORDED",
+                "task_id": "G3-TASK-1",
+                "verification_status": "PASS",
+                "verification_level": "GENERATED_TEST_EXECUTION",
+                "artifact_sha256": "a" * 64,
+                "attempt": True,
+                "lease_fingerprint": self.LEASE,
+                "commit_sha": self.COMMIT,
+                "tree_sha": self.TREE,
+                "at": "2026-10-29T00:00:00+00:00",
+            })
+            path.write_text(__import__("json").dumps(queue), encoding="utf-8")
+            with self.assertRaisesRegex(EvolutionError, "attempt must be a positive integer"):
+                load_queue(path)
+
+
 if __name__ == "__main__":
     unittest.main()
