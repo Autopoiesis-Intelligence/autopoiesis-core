@@ -26,7 +26,7 @@ def _canonical_json(value: Any) -> str:
             ensure_ascii=False,
             allow_nan=False,
         )
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise StateModelError(
             f"State graph must contain finite JSON-compatible data: {exc}"
         ) from exc
