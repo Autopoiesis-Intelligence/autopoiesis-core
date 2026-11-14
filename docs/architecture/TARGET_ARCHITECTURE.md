@@ -64,6 +64,8 @@ This is a conceptual cycle, not a mandatory linear evidence ladder. For example,
 ### 4.1 Domain model
 Owns the meaning of state elements, relations, invariants, identity and transition semantics. It must not depend on GitHub, a particular LLM, a scheduler or a specific application domain.
 
+The first repository representation is a canonical graph snapshot: elements have unique IDs and kinds; relations have unique IDs, kinds and source/target element references; both may carry JSON attributes. Ordering is normalized by ID, dangling references are rejected, and callers receive detached data. This is an initial structural contract, not yet a full ontology, temporal graph, event store or domain-specific semantic engine. The open question of snapshot versus individually versioned entities remains unresolved.
+
 ### 4.2 Trusted kernel
 The smallest deterministic policy-enforcing foundation:
 - canonical representation and stable identity;
