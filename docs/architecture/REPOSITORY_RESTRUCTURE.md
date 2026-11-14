@@ -114,8 +114,10 @@ This is a target map, not a requirement to split every file into a separate modu
 
 ### R2 — Domain/kernel extraction
 - Add contract tests around canonical state, relations, invariants and transitions.
-- Move pure deterministic logic without changing public behavior.
-- Acceptance: old and new paths produce equivalent canonical outputs; no adapter imports inside kernel.
+- Introduce a canonical StateGraph snapshot for X and R while preserving the existing core.py API.
+- Keep domain representation separate from deterministic kernel primitives; do not prematurely split a small cohesive model into many files.
+- Acceptance: duplicate IDs and dangling relations fail closed; equivalent graphs canonicalize identically; caller mutation cannot alter a snapshot; old digest/evolve behavior remains compatible; no adapter imports inside the domain or kernel.
+- Current branch: the first StateGraph implementation and contract tests exist, but they are not CI-proven yet.
 
 ### R3 — Lifecycle and persistence separation
 - Separate queue lifecycle transition rules from filesystem locks, atomic writes and snapshot handling.
