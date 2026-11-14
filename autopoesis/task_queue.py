@@ -130,6 +130,26 @@ def _validate_history(history: list[Any]) -> None:
             ):
                 raise EvolutionError(f"{prefix}: artifact_sha256 must be a lowercase SHA-256 hex digest")
 
+        # Attempt bindings are optional only for legacy/unbound history. Once
+        # any binding is present, the complete identity tuple must be valid.
+        binding_fields = ("attempt", "lease_fingerprint", "commit_sha", "tree_sha")
+        has_bindings = any(field in event for field in binding_fields)
+        if has_bindings:
+            attempt = event.get("attempt")
+            lease = event.get("lease_fingerprint")
+            commit = event.get("commit_sha")
+            tree = event.get("tree_sha")
+            if type(attempt) is not int or attempt < 1:
+                raise EvolutionError(f"{prefix}: attempt must be a positive integer")
+            if (
+                not isinstance(lease, str)
+                or len(lease) != 64
+                or any(char not in "0123456789abcdef" for char in lease)
+            ):
+                raise EvolutionError(f"{prefix}: lease_fingerprint must be a lowercase SHA-256 hex digest")
+            if not _valid_git_sha(commit) or not _valid_git_sha(tree):
+                raise EvolutionError(f"{prefix}: commit_sha and tree_sha must be full lowercase Git SHAs")
+
 
 def load_queue(path: Path) -> dict[str, Any]:
     """Load and validate a queue; a missing file means an empty queue."""
@@ -197,7 +217,6 @@ def load_queue(path: Path) -> dict[str, Any]:
                 f"item status is {item['status']!r}, latest history destination is {recorded_status!r}"
             )
     return queue
-
 
 def merge_candidates(queue: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
     """Add new candidates once; preserve existing statuses and append audit history."""
@@ -397,8 +416,7 @@ def record_verification_file(
             "verification_status": verification_status,
             "verification_level": verification_level,
             "artifact_sha256": artifact_sha256,
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
+            "at": datetime.now(timezone.utc).isoformat(),        }
         if all(value is not None for value in bindings):
             event.update({
                 "attempt": attempt,
