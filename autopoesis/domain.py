@@ -41,19 +41,29 @@ def _non_empty_string(value: Any, field: str) -> str:
 
 
 def _validate_object_keys(value: Any, field: str) -> None:
-    if isinstance(value, Mapping):
-        if any(not isinstance(key, str) for key in value):
-            raise StateModelError(f"{field} keys must be strings.")
-        for nested in value.values():
-            _validate_object_keys(nested, field)
-    elif isinstance(value, (list, tuple)):
-        for nested in value:
-            _validate_object_keys(nested, field)
+    pending = [(value, False)]
+    active: set[int] = set()
+    while pending:
+        current, exiting = pending.pop()
+        if not isinstance(current, (Mapping, list, tuple)):
+            continue
+        identity = id(current)
+        if exiting:
+            active.remove(identity)
+            continue
+        if identity in active:
+            raise StateModelError(f"{field} must not contain circular references.")
+        active.add(identity)
+        pending.append((current, True))
+        if isinstance(current, Mapping):
+            if any(not isinstance(key, str) for key in current):
+                raise StateModelError(f"{field} keys must be strings.")
+            pending.extend((nested, False) for nested in current.values())
+        else:
+            pending.extend((nested, False) for nested in current)
 
 
 def _attributes(value: Any, field: str) -> dict[str, Any]:
-    if value is None:
-        return {}
     if not isinstance(value, Mapping):
         raise StateModelError(f"{field} must be a JSON object.")
     _validate_object_keys(value, field)
