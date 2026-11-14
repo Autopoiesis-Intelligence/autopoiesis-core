@@ -123,6 +123,16 @@ class StateGraphTests(unittest.TestCase):
                 [],
             )
 
+    def test_rejects_null_attributes(self):
+        with self.assertRaisesRegex(StateModelError, "attributes must be a JSON object"):
+            StateGraph([{"id": "a", "kind": "node", "attributes": None}], [])
+
+    def test_rejects_circular_attributes(self):
+        attributes = {}
+        attributes["self"] = attributes
+        with self.assertRaisesRegex(StateModelError, "circular references"):
+            StateGraph([{"id": "a", "kind": "node", "attributes": attributes}], [])
+
     def test_rejects_blank_identifiers_and_kinds(self):
         with self.assertRaisesRegex(StateModelError, "element.id"):
             StateGraph([{"id": " ", "kind": "node"}], [])
