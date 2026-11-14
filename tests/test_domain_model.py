@@ -100,6 +100,15 @@ class StateGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(StateModelError, "attributes must be a JSON object"):
             StateGraph([{"id": "a", "kind": "node", "attributes": ["bad"]}], [])
 
+    def test_rejects_non_string_attribute_keys(self):
+        with self.assertRaisesRegex(StateModelError, "keys must be strings"):
+            StateGraph([{"id": "a", "kind": "node", "attributes": {1: "bad"}}], [])
+
+    def test_snapshot_cannot_be_reassigned(self):
+        graph = StateGraph(self.elements, self.relations)
+        with self.assertRaisesRegex(AttributeError, "immutable"):
+            graph._canonical = "{}"
+
     def test_rejects_non_finite_numbers(self):
         with self.assertRaisesRegex(StateModelError, "finite JSON-compatible"):
             StateGraph(
