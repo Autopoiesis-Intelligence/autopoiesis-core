@@ -47,11 +47,7 @@ autopoesis/
     invariants.py
     transition.py
     errors.py
-  domain/
-    state.py
-    relation.py
-    candidate.py
-    outcome.py
+  domain.py  # canonical StateGraph and domain records
   evolution/
     observe.py
     reflect.py
